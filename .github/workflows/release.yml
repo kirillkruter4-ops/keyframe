@@ -1,0 +1,43 @@
+name: Release
+
+# Сборка запускается тегом: git tag v0.1.0 && git push --tags
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # mpv весит 113 МБ и в репозитории не хранится
+      - name: Скачать mpv
+        run: npm run fetch-mpv
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - run: npm run typecheck
+
+      - name: Собрать и опубликовать
+        run: npx electron-builder --win --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: release/*-setup.exe
+          if-no-files-found: error

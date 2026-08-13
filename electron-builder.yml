@@ -1,0 +1,71 @@
+appId: io.keyframe.player
+productName: Keyframe
+copyright: Copyright © 2026 Keyframe contributors
+
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - out/**/*
+  - package.json
+
+# mpv кладём рядом с приложением, а не внутрь asar: это исполняемый файл,
+# запустить его из архива нельзя. В упакованном виде путь — resources/mpv/mpv.exe
+extraResources:
+  - from: resources/mpv
+    to: mpv
+    filter:
+      - '**/*'
+      - '!doc/**'
+      - '!installer/**'
+      - '!*.bat'
+  - from: resources/logo.svg
+    to: logo.svg
+
+asar: true
+
+win:
+  icon: build/icon.png
+  target:
+    - target: nsis
+      arch: [x64]
+  # Подписи пока нет: SmartScreen предупредит при первом запуске.
+  # Заявка в SignPath Foundation — когда у проекта появится история.
+  signAndEditExecutable: true
+
+# Регистрируем типы, чтобы Keyframe появился в «Открыть с помощью».
+# Назначить себя программой по умолчанию Windows 10/11 приложению не позволяет —
+# это делает пользователь в Параметрах, кнопка для этого есть в настройках.
+fileAssociations:
+  - ext: [mkv, mp4, avi, mov, webm, flv, m4v, mpg, mpeg, ts, m2ts, wmv, 3gp, ogv]
+    name: Видеофайл
+    description: Видео
+    role: Viewer
+    icon: build/icon.png
+  - ext: [mp3, flac, aac, m4a, opus, ogg, wav, wma, alac, ape]
+    name: Аудиофайл
+    description: Аудио
+    role: Viewer
+    icon: build/icon.png
+  - ext: [m3u, m3u8]
+    name: Плейлист
+    description: Плейлист
+    role: Viewer
+    icon: build/icon.png
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Keyframe
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  artifactName: Keyframe-${version}-setup.${ext}
+
+publish:
+  provider: github
+  owner: kirillkruter4-ops
+  repo: keyframe

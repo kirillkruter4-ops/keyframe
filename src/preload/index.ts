@@ -5,6 +5,14 @@ export interface WindowState {
   maximized: boolean
 }
 
+export type UpdateStatus =
+  | { state: 'idle' }
+  | { state: 'checking' }
+  | { state: 'available'; version: string }
+  | { state: 'downloading'; version: string; percent: number }
+  | { state: 'ready'; version: string }
+  | { state: 'error'; message: string }
+
 /**
  * Единственный мост между интерфейсом и системой. Renderer не имеет доступа
  * ни к Node, ни к mpv напрямую — только к этим методам.
@@ -39,6 +47,23 @@ const api = {
       }
     }
   },
+
+  update: {
+    status: () => ipcRenderer.invoke('update:status') as Promise<UpdateStatus>,
+    check: () => ipcRenderer.invoke('update:check') as Promise<UpdateStatus>,
+    download: () => ipcRenderer.invoke('update:download'),
+    install: () => ipcRenderer.invoke('update:install'),
+
+    onStatus: (cb: (status: UpdateStatus) => void): (() => void) => {
+      const handler = (_e: unknown, status: UpdateStatus) => cb(status)
+      ipcRenderer.on('update:status', handler)
+      return () => {
+        ipcRenderer.off('update:status', handler)
+      }
+    }
+  },
+
+  version: () => ipcRenderer.invoke('app:version') as Promise<string>,
 
   openFile: () => ipcRenderer.invoke('dialog:openFile') as Promise<string | null>,
 

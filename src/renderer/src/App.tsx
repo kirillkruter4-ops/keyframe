@@ -6,8 +6,10 @@ import {
   useWindowState,
   useScrub,
   useOsd,
+  useUpdate,
   type PlayerState,
-  type OsdMessage
+  type OsdMessage,
+  type UpdateStatus
 } from './usePlayer'
 import logoUrl from './assets/logo.svg'
 
@@ -26,6 +28,7 @@ export function App(): JSX.Element {
   const startDrag = useWindowDrag()
   const { fullscreen, maximized } = useWindowState()
   const [osd, showOsd] = useOsd()
+  const update = useUpdate()
 
   const hasFile = player.filename !== null
   const chromeVisible = useIdleChrome(2500, hasFile && !player.paused)
@@ -215,6 +218,7 @@ export function App(): JSX.Element {
       onDrop={onDrop}
     >
       {osd && <Osd message={osd} />}
+      <UpdateBanner status={update} />
 
       <div className="chrome-layer" data-hidden={!chromeVisible}>
         <div className="titlebar" onMouseDown={startDrag} onDoubleClick={() => void window.keyframe.window.toggleMaximize()}>
@@ -389,6 +393,54 @@ export function App(): JSX.Element {
             Открыть файл
           </button>
         </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Сообщение о новой версии.
+ *
+ * Живёт в углу и не перехватывает мышь мимо своих кнопок: обновление не должно
+ * мешать смотреть. Скачивание начинается только по нажатию — тянуть 200 МБ
+ * фоном под чужой фильм нельзя.
+ */
+function UpdateBanner({ status }: { status: UpdateStatus }): JSX.Element | null {
+  const api = window.keyframe.update
+
+  if (status.state === 'idle' || status.state === 'checking' || status.state === 'error') return null
+
+  return (
+    <div className="update">
+      {status.state === 'available' && (
+        <>
+          <span className="update__text">
+            Доступна версия <b>{status.version}</b>
+          </span>
+          <button className="update__button" onClick={() => void api.download()}>
+            Обновить
+          </button>
+        </>
+      )}
+
+      {status.state === 'downloading' && (
+        <>
+          <span className="update__text tnum">Загрузка {status.percent}%</span>
+          <span className="update__progress">
+            <span className="update__progress-fill" style={{ width: `${status.percent}%` }} />
+          </span>
+        </>
+      )}
+
+      {status.state === 'ready' && (
+        <>
+          <span className="update__text">
+            Версия <b>{status.version}</b> готова
+          </span>
+          <button className="update__button" onClick={() => void api.install()}>
+            Перезапустить
+          </button>
+        </>
       )}
     </div>
   )

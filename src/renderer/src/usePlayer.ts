@@ -152,6 +152,25 @@ export function useWindowState(): { fullscreen: boolean; maximized: boolean } {
   return state
 }
 
+export type UpdateStatus =
+  | { state: 'idle' }
+  | { state: 'checking' }
+  | { state: 'available'; version: string }
+  | { state: 'downloading'; version: string; percent: number }
+  | { state: 'ready'; version: string }
+  | { state: 'error'; message: string }
+
+export function useUpdate(): UpdateStatus {
+  const [status, setStatus] = useState<UpdateStatus>({ state: 'idle' })
+
+  useEffect(() => {
+    void window.keyframe.update.status().then(setStatus)
+    return window.keyframe.update.onStatus(setStatus)
+  }, [])
+
+  return status
+}
+
 export interface Scrub {
   ref: React.RefObject<HTMLDivElement | null>
   /** Позиция под пальцем, пока идёт перетаскивание. null — тащить перестали. */

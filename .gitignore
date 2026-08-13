@@ -10,3 +10,9 @@ resources/mpv/
 *.tsbuildinfo
 *.log
 .DS_Store
+
+# Иконка сгенерирована из resources/logo.svg, но лежит в репозитории:
+# меняется она раз в год, а иначе CI пришлось бы тянуть sharp ради одного файла.
+# Пересобрать: npm run icon
+
+release/

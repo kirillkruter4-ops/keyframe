@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Mpv } from './mpv'
+import { setupUpdater } from './updater'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
@@ -201,6 +202,8 @@ function createWindows(): void {
     overlayWindow = null
   })
 
+  setupUpdater(overlayWindow)
+
   hostWindow.once('ready-to-show', async () => {
     hostWindow!.show()
     raiseOverlay()
@@ -262,6 +265,8 @@ ipcMain.handle('window:toggleFullscreen', () => {
   hostWindow.setFullScreen(next)
   return next
 })
+
+ipcMain.handle('app:version', () => app.getVersion())
 
 ipcMain.handle('window:state', () => ({
   fullscreen: hostWindow?.isFullScreen() ?? false,
