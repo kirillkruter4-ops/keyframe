@@ -133,9 +133,13 @@ function createWindows(): void {
     }
   })
 
-  // По умолчанию оверлей полностью прозрачен для мыши — клики уходят в видео.
-  // Renderer включает перехват только когда курсор над интерактивным элементом.
-  overlayWindow.setIgnoreMouseEvents(true, { forward: true })
+  // Оверлей забирает мышь целиком и не пропускает её вниз.
+  //
+  // Сквозной режим (setIgnoreMouseEvents с forward) здесь не работает
+  // принципиально: Electron возвращает перехваченные события только если под
+  // курсором окно того же приложения, а у нас под оверлеем чужое нативное окно
+  // mpv — сообщения уходят туда и не возвращаются. Пропускать их вниз и не
+  // нужно: собственный ввод mpv выключен, в видеослое кликать некому.
 
   // Ошибки интерфейса иначе умирают молча: у оверлея нет видимой консоли
   overlayWindow.webContents.on('console-message', (event) => {
@@ -178,9 +182,6 @@ function createWindows(): void {
     if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.destroy()
     overlayWindow = null
   })
-
-  // Фокус всегда должен быть на host: иначе клавиатура уходит в невидимый оверлей
-  overlayWindow.on('focus', () => hostWindow?.focus())
 
   hostWindow.once('ready-to-show', async () => {
     hostWindow!.show()
@@ -235,10 +236,6 @@ ipcMain.handle('dialog:openFile', async () => {
   if (canceled || filePaths.length === 0) return null
   await mpv?.loadFile(filePaths[0])
   return filePaths[0]
-})
-
-ipcMain.handle('window:setIgnoreMouse', (_e, ignore: boolean) => {
-  overlayWindow?.setIgnoreMouseEvents(ignore, { forward: true })
 })
 
 ipcMain.handle('window:toggleFullscreen', () => {

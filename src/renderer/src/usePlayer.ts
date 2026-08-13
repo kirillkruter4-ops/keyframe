@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 export interface PlayerState {
   ready: boolean
@@ -102,45 +102,6 @@ export function usePlayer(): PlayerState {
 }
 
 /**
- * При перетаскивании окна курсор уходит за пределы титлбара, и обычная логика
- * тут же вернула бы прозрачность для мыши — события потерялись бы на середине
- * жеста. На время таких жестов переключение блокируется.
- */
-let passthroughLocked = false
-
-export function lockPassthrough(locked: boolean): void {
-  passthroughLocked = locked
-}
-
-/**
- * Оверлей по умолчанию прозрачен для мыши, иначе клики не доходили бы до видео.
- * Здесь мы отслеживаем, находится ли курсор над интерактивным элементом,
- * и включаем перехват только на это время.
- *
- * Работает благодаря forward:true в setIgnoreMouseEvents — окно продолжает
- * получать mousemove, даже когда не принимает клики.
- */
-export function useMousePassthrough(): void {
-  const ignoring = useRef(true)
-
-  useEffect(() => {
-    const onMove = (event: MouseEvent): void => {
-      if (passthroughLocked) return
-
-      const target = document.elementFromPoint(event.clientX, event.clientY)
-      const interactive = Boolean(target?.closest('[data-interactive]'))
-
-      if (interactive === !ignoring.current) return
-      ignoring.current = !interactive
-      void window.keyframe.window.setIgnoreMouse(ignoring.current)
-    }
-
-    window.addEventListener('mousemove', onMove)
-    return () => window.removeEventListener('mousemove', onMove)
-  }, [])
-}
-
-/**
  * Перетаскивание безрамочного окна. Двигать нужно host-окно, а курсор при этом
  * находится над оверлеем, поэтому дельту считаем по экранным координатам и
  * отдаём в главный процесс.
@@ -150,7 +111,6 @@ export function useWindowDrag(): (event: React.MouseEvent) => void {
     if (event.button !== 0) return
 
     void window.keyframe.window.dragStart(event.screenX, event.screenY)
-    lockPassthrough(true)
 
     const onMove = (e: MouseEvent): void => {
       void window.keyframe.window.dragMove(e.screenX, e.screenY)
@@ -158,7 +118,6 @@ export function useWindowDrag(): (event: React.MouseEvent) => void {
 
     const onUp = (): void => {
       void window.keyframe.window.dragEnd()
-      lockPassthrough(false)
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }

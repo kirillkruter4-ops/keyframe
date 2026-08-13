@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 /**
  * Единственный мост между интерфейсом и системой. Renderer не имеет доступа
@@ -29,8 +29,10 @@ const api = {
 
   openFile: () => ipcRenderer.invoke('dialog:openFile') as Promise<string | null>,
 
+  // File.path из renderer убрали начиная с Electron 32 — путь отдаёт только webUtils
+  getPathForFile: (file: File) => webUtils.getPathForFile(file),
+
   window: {
-    setIgnoreMouse: (ignore: boolean) => ipcRenderer.invoke('window:setIgnoreMouse', ignore),
     toggleFullscreen: () => ipcRenderer.invoke('window:toggleFullscreen') as Promise<boolean>,
     toggleMaximize: () => ipcRenderer.invoke('window:toggleMaximize'),
     minimize: () => ipcRenderer.invoke('window:minimize'),
