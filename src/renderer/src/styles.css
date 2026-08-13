@@ -1,0 +1,311 @@
+/*
+ * Дизайн-токены Keyframe.
+ * Тема одна — тёмная. Светлая не планируется, но все цвета вынесены сюда,
+ * чтобы её добавление не требовало правок в компонентах.
+ */
+:root {
+  --bg-base: #0a0a0b;
+  --bg-surface: #131316;
+  --bg-raised: #1a1a1f;
+  --border: #26262c;
+  --border-strong: #34343c;
+
+  --text-hi: #ededf0;
+  --text-lo: #8a8a94;
+  --text-dim: #5c5c66;
+
+  /* Акцент взят из логотипа, чтобы иконка и интерфейс были одного цвета */
+  --accent: #1852fe;
+  --accent-hover: #3f6dff;
+  /* Отдельный токен для акцентного ТЕКСТА: сам --accent на тёмном фоне даёт
+     3.4:1 и проваливает AA для букв. Этот — 6.2:1. */
+  --accent-text: #6b93ff;
+  --accent-subtle: rgba(24, 82, 254, 0.16);
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  /* Единая кривая для всего, что двигается. Плеер не место для пружин. */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+
+  --chrome-height: 88px;
+  --titlebar-height: 36px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  /* Оверлей должен быть прозрачным: под ним нативное окно с видео */
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  font-family: Inter, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 450;
+  color: var(--text-hi);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+/* Цифры таймкода не должны прыгать по ширине при смене секунд */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  transition: opacity var(--dur-slow) var(--ease);
+}
+
+.overlay[data-hidden='true'] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---------- Титлбар ---------- */
+
+.titlebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--titlebar-height);
+  display: flex;
+  align-items: center;
+  padding-left: 12px;
+  gap: 8px;
+  /* Скрим вместо blur: над нативным видеослоем backdrop-filter не работает */
+  background: linear-gradient(to bottom, rgba(10, 10, 11, 0.82), rgba(10, 10, 11, 0));
+}
+
+.titlebar__title {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-lo);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 80px;
+}
+
+.titlebar__buttons {
+  display: flex;
+  height: 100%;
+}
+
+.titlebar__button {
+  width: 46px;
+  height: var(--titlebar-height);
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-lo);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.titlebar__button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-hi);
+}
+
+.titlebar__button--close:hover {
+  background: #e5484d;
+  color: #fff;
+}
+
+/* ---------- Нижняя панель ---------- */
+
+.chrome {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 40px 16px 14px;
+  background: linear-gradient(to top, rgba(10, 10, 11, 0.9) 30%, rgba(10, 10, 11, 0));
+}
+
+.timeline {
+  position: relative;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.timeline__track {
+  position: relative;
+  width: 100%;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  transition: height var(--dur-fast) var(--ease);
+}
+
+.timeline:hover .timeline__track {
+  height: 5px;
+}
+
+.timeline__buffer {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.timeline__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.timeline__thumb {
+  position: absolute;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  transform: translate(-50%, -50%) scale(0);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.timeline:hover .timeline__thumb {
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.control {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-hi);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.control:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.control:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.timecode {
+  margin-left: 6px;
+  font-size: 12px;
+  color: var(--text-lo);
+}
+
+.timecode__current {
+  color: var(--text-hi);
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* ---------- Пустое состояние ---------- */
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 18px;
+  text-align: center;
+}
+
+.empty__logo {
+  width: 76px;
+  height: 76px;
+  opacity: 0.9;
+}
+
+.empty__title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-hi);
+}
+
+.empty__hint {
+  font-size: 12.5px;
+  color: var(--text-lo);
+  line-height: 1.7;
+}
+
+kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text-hi);
+}
+
+/* ---------- Диагностика спайка ---------- */
+
+.diag {
+  position: absolute;
+  top: calc(var(--titlebar-height) + 12px);
+  right: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(19, 19, 22, 0.92);
+  font-size: 11.5px;
+  line-height: 1.85;
+  color: var(--text-lo);
+}
+
+.diag__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.diag__value {
+  color: var(--text-hi);
+}
+
+.diag__value--ok {
+  color: #46c17a;
+}
+
+.diag__value--warn {
+  color: #f0a742;
+}
