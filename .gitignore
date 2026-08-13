@@ -7,5 +7,6 @@ dist/
 # разработчики и CI берут его через `npm run fetch-mpv`.
 resources/mpv/
 
+*.tsbuildinfo
 *.log
 .DS_Store
