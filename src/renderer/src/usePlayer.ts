@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 export interface PlayerState {
   ready: boolean
@@ -99,6 +99,126 @@ export function usePlayer(): PlayerState {
   }, [])
 
   return state
+}
+
+export interface OsdMessage {
+  /** Меняется на каждом показе — по нему перезапускается анимация */
+  id: number
+  label: string
+  /** 0–100, если у действия есть уровень: показывается полоской */
+  meter?: number
+  icon?: 'forward' | 'back' | 'volume' | 'mute'
+}
+
+/**
+ * Всплывающая подсказка о том, что сделало нажатие клавиши.
+ *
+ * Без неё перемотка стрелками не даёт обратной связи: на паузе кадр меняется
+ * незаметно, а громкость вообще никак не отображается.
+ */
+export function useOsd(): [OsdMessage | null, (message: Omit<OsdMessage, 'id'>) => void] {
+  const [message, setMessage] = useState<OsdMessage | null>(null)
+  const nextId = useRef(1)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Стабильная ссылка: показ подсказки попадает в зависимости обработчиков
+  const show = useCallback((next: Omit<OsdMessage, 'id'>): void => {
+    setMessage({ ...next, id: nextId.current++ })
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = setTimeout(() => setMessage(null), 1100)
+  }, [])
+
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current)
+  }, [])
+
+  return [message, show]
+}
+
+/**
+ * Состояние окна приходит только из главного процесса и никогда не угадывается
+ * интерфейсом: развернуть окно или выйти из полного экрана можно и мимо наших
+ * кнопок, а расходящееся состояние даёт кнопку, которая делает не то, что
+ * нарисовано на её иконке.
+ */
+export function useWindowState(): { fullscreen: boolean; maximized: boolean } {
+  const [state, setState] = useState({ fullscreen: false, maximized: false })
+
+  useEffect(() => {
+    void window.keyframe.window.state().then(setState)
+    return window.keyframe.window.onState(setState)
+  }, [])
+
+  return state
+}
+
+export interface Scrub {
+  ref: React.RefObject<HTMLDivElement | null>
+  /** Позиция под пальцем, пока идёт перетаскивание. null — тащить перестали. */
+  ratio: number | null
+  handlers: {
+    onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void
+    onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => void
+    onPointerUp: (event: React.PointerEvent<HTMLDivElement>) => void
+    onPointerCancel: (event: React.PointerEvent<HTMLDivElement>) => void
+  }
+}
+
+/**
+ * Перетаскиваемый ползунок: таймлайн и громкость.
+ *
+ * Захват указателя обязателен — без него курсор, вышедший за границы дорожки,
+ * перестаёт слать события, и перетаскивание обрывается на полпути. Именно
+ * поэтому раньше клик по таймлайну срабатывал, а протяжка нет.
+ *
+ * Пока тащим, положение берётся из ratio, а не из состояния плеера: mpv
+ * присылает позицию с задержкой, и ползунок отставал бы от пальца.
+ */
+export function useScrub(onScrub: (ratio: number, done: boolean) => void): Scrub {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const [ratio, setRatio] = useState<number | null>(null)
+  const dragging = useRef(false)
+
+  const ratioAt = (clientX: number): number => {
+    const element = ref.current
+    if (!element) return 0
+    const box = element.getBoundingClientRect()
+    if (box.width === 0) return 0
+    return Math.min(1, Math.max(0, (clientX - box.left) / box.width))
+  }
+
+  return {
+    ref,
+    ratio,
+    handlers: {
+      onPointerDown: (event) => {
+        if (event.button !== 0) return
+        event.currentTarget.setPointerCapture(event.pointerId)
+        dragging.current = true
+        const value = ratioAt(event.clientX)
+        setRatio(value)
+        onScrub(value, false)
+      },
+      onPointerMove: (event) => {
+        if (!dragging.current) return
+        const value = ratioAt(event.clientX)
+        setRatio(value)
+        onScrub(value, false)
+      },
+      onPointerUp: (event) => {
+        if (!dragging.current) return
+        dragging.current = false
+        event.currentTarget.releasePointerCapture(event.pointerId)
+        const value = ratioAt(event.clientX)
+        setRatio(null)
+        onScrub(value, true)
+      },
+      onPointerCancel: () => {
+        dragging.current = false
+        setRatio(null)
+      }
+    }
+  }
 }
 
 /**

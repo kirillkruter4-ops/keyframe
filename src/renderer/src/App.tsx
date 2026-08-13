@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, type JSX, type MouseEvent as ReactMouseEvent } from 'react'
-import { usePlayer, useIdleChrome, useWindowDrag, type PlayerState } from './usePlayer'
+import {
+  usePlayer,
+  useIdleChrome,
+  useWindowDrag,
+  useWindowState,
+  useScrub,
+  useOsd,
+  type PlayerState,
+  type OsdMessage
+} from './usePlayer'
 import logoUrl from './assets/logo.svg'
 
 function formatTime(seconds: number): string {
@@ -15,12 +24,28 @@ function formatTime(seconds: number): string {
 export function App(): JSX.Element {
   const player = usePlayer()
   const startDrag = useWindowDrag()
+  const { fullscreen, maximized } = useWindowState()
+  const [osd, showOsd] = useOsd()
 
   const hasFile = player.filename !== null
   const chromeVisible = useIdleChrome(2500, hasFile && !player.paused)
-  const timelineRef = useRef<HTMLDivElement>(null)
 
   const mpv = window.keyframe.mpv
+
+  /**
+   * Пока тащим — перематываем по ключевым кадрам: так картинка успевает за
+   * пальцем. На отпускании один точный переход в нужную позицию.
+   */
+  const timeline = useScrub((ratio, done) => {
+    if (player.duration <= 0) return
+    void mpv.command('seek', ratio * player.duration, done ? 'absolute' : 'absolute+keyframes')
+  })
+
+  const volume = useScrub((ratio) => {
+    void mpv.set('volume', Math.round(ratio * 100))
+    // Крутить громкость при включённом mute бессмысленно — снимаем его
+    if (player.muted) void mpv.set('mute', false)
+  })
 
   const togglePause = useCallback(() => {
     void mpv.command('cycle', 'pause')
@@ -33,17 +58,65 @@ export function App(): JSX.Element {
   const seekBy = useCallback(
     (delta: number) => {
       void mpv.command('seek', delta, 'relative')
+      showOsd({
+        label: `${delta > 0 ? '+' : '−'}${Math.abs(delta)} с`,
+        icon: delta > 0 ? 'forward' : 'back'
+      })
     },
-    [mpv]
+    [mpv, showOsd]
   )
+
+  /**
+   * Новое значение считаем сами, а не ждём ответа mpv: подсказка должна
+   * появиться в момент нажатия, иначе она отстаёт на круг IPC.
+   *
+   * При зажатой клавише нажатия идут ~30 раз в секунду — быстрее, чем mpv
+   * успевает подтвердить новое значение. Поэтому считаем от собственного
+   * счётчика, а не от player.volume: иначе каждое следующее нажатие
+   * отталкивалось бы от устаревшего числа и громкость стояла бы на месте.
+   */
+  const pendingVolume = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (pendingVolume.current === null) return
+    // mpv подтвердил наше значение — дальше снова доверяем ему
+    if (Math.round(player.volume) === pendingVolume.current) pendingVolume.current = null
+  }, [player.volume])
+
+  const adjustVolume = useCallback(
+    (delta: number) => {
+      const base = pendingVolume.current ?? player.volume
+      const next = Math.min(100, Math.max(0, Math.round(base + delta)))
+      pendingVolume.current = next
+
+      void mpv.set('volume', next)
+      if (player.muted && next > 0) void mpv.set('mute', false)
+      showOsd({ label: `${next}%`, meter: next, icon: next === 0 ? 'mute' : 'volume' })
+    },
+    [mpv, player.volume, player.muted, showOsd]
+  )
+
+  const toggleMute = useCallback(() => {
+    const next = !player.muted
+    void mpv.set('mute', next)
+    showOsd({
+      label: next ? 'Без звука' : `${Math.round(player.volume)}%`,
+      meter: next ? 0 : player.volume,
+      icon: next ? 'mute' : 'volume'
+    })
+  }, [mpv, player.muted, player.volume, showOsd])
 
   const openFile = useCallback(() => {
     void window.keyframe.openFile()
   }, [])
 
   useEffect(() => {
+    // Клавиши, которые имеют смысл при удержании: перемотка и громкость.
+    // Остальные срабатывают один раз на нажатие.
+    const repeatable = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'KeyJ', 'KeyL'])
+
     const onKey = (event: KeyboardEvent): void => {
-      if (event.repeat && event.code !== 'ArrowLeft' && event.code !== 'ArrowRight') return
+      if (event.repeat && !repeatable.has(event.code)) return
 
       switch (event.code) {
         case 'Space':
@@ -64,13 +137,13 @@ export function App(): JSX.Element {
           seekBy(-10)
           break
         case 'ArrowUp':
-          void mpv.command('add', 'volume', 5)
+          adjustVolume(5)
           break
         case 'ArrowDown':
-          void mpv.command('add', 'volume', -5)
+          adjustVolume(-5)
           break
         case 'KeyM':
-          void mpv.command('cycle', 'mute')
+          toggleMute()
           break
         case 'KeyF':
         case 'Escape':
@@ -84,18 +157,7 @@ export function App(): JSX.Element {
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [togglePause, seekBy, openFile, toggleFullscreen, mpv])
-
-  const seekToPoint = useCallback(
-    (clientX: number) => {
-      const track = timelineRef.current
-      if (!track || player.duration <= 0) return
-      const rect = track.getBoundingClientRect()
-      const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
-      void mpv.command('seek', ratio * player.duration, 'absolute')
-    },
-    [mpv, player.duration]
-  )
+  }, [togglePause, seekBy, openFile, toggleFullscreen, adjustVolume, toggleMute])
 
   /**
    * Клик по видео. Слой хрома не принимает мышь, поэтому сюда попадают только
@@ -113,7 +175,7 @@ export function App(): JSX.Element {
   }
 
   const onWheel = (event: React.WheelEvent<HTMLDivElement>): void => {
-    void mpv.command('add', 'volume', event.deltaY < 0 ? 5 : -5)
+    adjustVolume(event.deltaY < 0 ? 5 : -5)
   }
 
   const onDrop = (event: React.DragEvent<HTMLDivElement>): void => {
@@ -124,11 +186,23 @@ export function App(): JSX.Element {
     if (filePath) void mpv.command('loadfile', filePath, 'replace')
   }
 
-  const progress = player.duration > 0 ? (player.timePos / player.duration) * 100 : 0
+  // Пока таймлайн тащат, показываем позицию под пальцем, а не отстающую от mpv
+  const progress =
+    timeline.ratio !== null
+      ? timeline.ratio * 100
+      : player.duration > 0
+        ? (player.timePos / player.duration) * 100
+        : 0
+
   const buffered =
     player.duration > 0
       ? Math.min(100, ((player.timePos + player.cacheDuration) / player.duration) * 100)
       : 0
+
+  const volumeLevel = player.muted ? 0 : volume.ratio !== null ? volume.ratio * 100 : player.volume
+
+  // Выкрученный в ноль ползунок — это тоже «звука нет», иконка должна совпадать
+  const silent = player.muted || volumeLevel < 1
 
   return (
     <div
@@ -140,6 +214,8 @@ export function App(): JSX.Element {
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDrop}
     >
+      {osd && <Osd message={osd} />}
+
       <div className="chrome-layer" data-hidden={!chromeVisible}>
         <div className="titlebar" onMouseDown={startDrag} onDoubleClick={() => void window.keyframe.window.toggleMaximize()}>
           <div className="titlebar__title">{player.filename ?? 'Keyframe'}</div>
@@ -156,11 +232,19 @@ export function App(): JSX.Element {
             <button
               className="titlebar__button"
               onClick={() => void window.keyframe.window.toggleMaximize()}
-              aria-label="Развернуть"
+              aria-label={fullscreen || maximized ? 'Восстановить' : 'Развернуть'}
             >
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                <rect x="0.6" y="0.6" width="8.8" height="8.8" stroke="currentColor" strokeWidth="1.2" />
-              </svg>
+              {fullscreen || maximized ? (
+                // Два смещённых квадрата — привычный для Windows знак «восстановить»
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                  <path d="M2.6 2.6V1h6.4v6.4H7.4" stroke="currentColor" strokeWidth="1.2" />
+                  <rect x="1" y="2.6" width="6.4" height="6.4" stroke="currentColor" strokeWidth="1.2" />
+                </svg>
+              ) : (
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                  <rect x="0.6" y="0.6" width="8.8" height="8.8" stroke="currentColor" strokeWidth="1.2" />
+                </svg>
+              )}
             </button>
             <button
               className="titlebar__button titlebar__button--close"
@@ -180,8 +264,9 @@ export function App(): JSX.Element {
           <div className="chrome">
             <div
               className="timeline"
-              ref={timelineRef}
-              onMouseDown={(e) => seekToPoint(e.clientX)}
+              ref={timeline.ref}
+              data-scrubbing={timeline.ratio !== null}
+              {...timeline.handlers}
               role="slider"
               aria-label="Позиция воспроизведения"
               aria-valuemin={0}
@@ -210,25 +295,52 @@ export function App(): JSX.Element {
                 )}
               </button>
 
-              <button className="control" onClick={() => void mpv.command('cycle', 'mute')} aria-label="Звук">
-                {player.muted ? (
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M8 2.5L4.5 5.5H2v5h2.5L8 13.5z" />
-                    <path d="M11 6l4 4M15 6l-4 4" stroke="currentColor" strokeWidth="1.4" fill="none" />
-                  </svg>
-                ) : (
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M8 2.5L4.5 5.5H2v5h2.5L8 13.5z" />
-                    <path
-                      d="M10.5 5.5a3.5 3.5 0 010 5M12.6 3.4a6.5 6.5 0 010 9.2"
-                      stroke="currentColor"
-                      strokeWidth="1.3"
-                      fill="none"
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                )}
-              </button>
+              <div className="volume">
+                <button
+                  className="control"
+                  onClick={toggleMute}
+                  aria-label={silent ? 'Включить звук' : 'Выключить звук'}
+                >
+                  {silent ? (
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M8 2.5L4.5 5.5H2v5h2.5L8 13.5z" />
+                      <path d="M11 6l4 4M15 6l-4 4" stroke="currentColor" strokeWidth="1.4" fill="none" />
+                    </svg>
+                  ) : (
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M8 2.5L4.5 5.5H2v5h2.5L8 13.5z" />
+                      <path
+                        d={
+                          volumeLevel > 55
+                            ? 'M10.5 5.5a3.5 3.5 0 010 5M12.6 3.4a6.5 6.5 0 010 9.2'
+                            : 'M10.5 5.5a3.5 3.5 0 010 5'
+                        }
+                        stroke="currentColor"
+                        strokeWidth="1.3"
+                        fill="none"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                  )}
+                </button>
+
+                <div
+                  className="volume__slider"
+                  ref={volume.ref}
+                  {...volume.handlers}
+                  role="slider"
+                  aria-label="Громкость"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(volumeLevel)}
+                  tabIndex={0}
+                >
+                  <div className="volume__track">
+                    <div className="volume__fill" style={{ width: `${volumeLevel}%` }} />
+                    <div className="volume__thumb" style={{ left: `${volumeLevel}%` }} />
+                  </div>
+                </div>
+              </div>
 
               <div className="timecode tnum">
                 <span className="timecode__current">{formatTime(player.timePos)}</span>
@@ -243,10 +355,21 @@ export function App(): JSX.Element {
                 </svg>
               </button>
 
-              <button className="control" onClick={toggleFullscreen} aria-label="Полный экран">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
-                  <path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" strokeLinecap="round" />
-                </svg>
+              <button
+                className="control"
+                onClick={toggleFullscreen}
+                aria-label={fullscreen ? 'Выйти из полного экрана' : 'Полный экран'}
+              >
+                {fullscreen ? (
+                  // Стрелки внутрь — «свернуть обратно»
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+                    <path d="M6 2v4H2M10 2v4h4M6 14v-4H2M10 14v-4h4" strokeLinecap="round" />
+                  </svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+                    <path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" strokeLinecap="round" />
+                  </svg>
+                )}
               </button>
             </div>
           </div>
@@ -269,6 +392,63 @@ export function App(): JSX.Element {
       )}
     </div>
   )
+}
+
+/**
+ * Подсказка о результате действия. Показывается поверх видео и сама угасает.
+ *
+ * key по id перезапускает анимацию: при быстрых повторных нажатиях подсказка
+ * должна вспыхивать заново, а не висеть неподвижно.
+ */
+function Osd({ message }: { message: OsdMessage }): JSX.Element {
+  return (
+    <div className="osd" key={message.id}>
+      {message.icon && <OsdIcon icon={message.icon} />}
+      <span className="osd__label tnum">{message.label}</span>
+      {message.meter !== undefined && (
+        <span className="osd__meter">
+          <span className="osd__meter-fill" style={{ width: `${message.meter}%` }} />
+        </span>
+      )}
+    </div>
+  )
+}
+
+function OsdIcon({ icon }: { icon: NonNullable<OsdMessage['icon']> }): JSX.Element {
+  switch (icon) {
+    case 'forward':
+      return (
+        <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M2 3l5.5 5L2 13zM8.5 3L14 8l-5.5 5z" />
+        </svg>
+      )
+    case 'back':
+      return (
+        <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M14 3L8.5 8 14 13zM7.5 3L2 8l5.5 5z" />
+        </svg>
+      )
+    case 'mute':
+      return (
+        <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M8 2.5L4.5 5.5H2v5h2.5L8 13.5z" />
+          <path d="M11 6l4 4M15 6l-4 4" stroke="currentColor" strokeWidth="1.4" fill="none" />
+        </svg>
+      )
+    case 'volume':
+      return (
+        <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M8 2.5L4.5 5.5H2v5h2.5L8 13.5z" />
+          <path
+            d="M10.5 5.5a3.5 3.5 0 010 5M12.6 3.4a6.5 6.5 0 010 9.2"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            fill="none"
+            strokeLinecap="round"
+          />
+        </svg>
+      )
+  }
 }
 
 /**

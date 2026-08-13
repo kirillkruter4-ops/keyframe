@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
+export interface WindowState {
+  fullscreen: boolean
+  maximized: boolean
+}
+
 /**
  * Единственный мост между интерфейсом и системой. Renderer не имеет доступа
  * ни к Node, ни к mpv напрямую — только к этим методам.
@@ -10,20 +15,28 @@ const api = {
     set: (name: string, value: unknown) => ipcRenderer.invoke('mpv:set', name, value),
     state: () => ipcRenderer.invoke('mpv:state') as Promise<Record<string, unknown>>,
 
-    onProperty: (cb: (name: string, value: unknown) => void) => {
+    // Отписки возвращают void намеренно: иначе их нельзя отдать напрямую
+    // из useEffect — React примет ipcRenderer за функцию очистки
+    onProperty: (cb: (name: string, value: unknown) => void): (() => void) => {
       const handler = (_e: unknown, name: string, value: unknown) => cb(name, value)
       ipcRenderer.on('mpv:property', handler)
-      return () => ipcRenderer.off('mpv:property', handler)
+      return () => {
+        ipcRenderer.off('mpv:property', handler)
+      }
     },
-    onReady: (cb: () => void) => {
+    onReady: (cb: () => void): (() => void) => {
       const handler = () => cb()
       ipcRenderer.on('mpv:ready', handler)
-      return () => ipcRenderer.off('mpv:ready', handler)
+      return () => {
+        ipcRenderer.off('mpv:ready', handler)
+      }
     },
-    onExit: (cb: (info: unknown) => void) => {
+    onExit: (cb: (info: unknown) => void): (() => void) => {
       const handler = (_e: unknown, info: unknown) => cb(info)
       ipcRenderer.on('mpv:exit', handler)
-      return () => ipcRenderer.off('mpv:exit', handler)
+      return () => {
+        ipcRenderer.off('mpv:exit', handler)
+      }
     }
   },
 
@@ -39,7 +52,17 @@ const api = {
     close: () => ipcRenderer.invoke('window:close'),
     dragStart: (x: number, y: number) => ipcRenderer.invoke('window:dragStart', x, y),
     dragMove: (x: number, y: number) => ipcRenderer.invoke('window:dragMove', x, y),
-    dragEnd: () => ipcRenderer.invoke('window:dragEnd')
+    dragEnd: () => ipcRenderer.invoke('window:dragEnd'),
+
+    state: () => ipcRenderer.invoke('window:state') as Promise<WindowState>,
+
+    onState: (cb: (state: WindowState) => void): (() => void) => {
+      const handler = (_e: unknown, state: WindowState) => cb(state)
+      ipcRenderer.on('window:state', handler)
+      return () => {
+        ipcRenderer.off('window:state', handler)
+      }
+    }
   }
 }
 

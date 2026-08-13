@@ -113,8 +113,41 @@ body {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  /* Скрим вместо blur: над нативным видеослоем backdrop-filter не работает */
-  background: linear-gradient(to bottom, rgba(10, 10, 11, 0.82), rgba(10, 10, 11, 0));
+}
+
+/*
+ * Затемнение вместо размытия.
+ *
+ * backdrop-filter здесь бесполезен: видео рисует отдельное нативное окно mpv,
+ * и под этой панелью у Chromium нет пикселей, которые можно размыть.
+ *
+ * Линейный градиент выдаёт себя чёткой полосой на середине, поэтому ступени
+ * подобраны по кривой затухания — так переход не читается глазом. Скрим втрое
+ * выше самой панели по той же причине.
+ */
+.titlebar::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 108px;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    rgba(10, 10, 11, 0.86) 0%,
+    rgba(10, 10, 11, 0.8) 14%,
+    rgba(10, 10, 11, 0.68) 28%,
+    rgba(10, 10, 11, 0.52) 42%,
+    rgba(10, 10, 11, 0.35) 57%,
+    rgba(10, 10, 11, 0.2) 71%,
+    rgba(10, 10, 11, 0.08) 86%,
+    rgba(10, 10, 11, 0) 100%
+  );
+}
+
+.titlebar > * {
+  position: relative;
 }
 
 /*
@@ -169,8 +202,19 @@ body {
   left: 0;
   right: 0;
   bottom: 0;
-  padding: 40px 16px 14px;
-  background: linear-gradient(to top, rgba(10, 10, 11, 0.9) 30%, rgba(10, 10, 11, 0));
+  padding: 56px 16px 14px;
+  /* Те же ступени, что и сверху, только снизу вверх */
+  background: linear-gradient(
+    to top,
+    rgba(10, 10, 11, 0.9) 0%,
+    rgba(10, 10, 11, 0.85) 16%,
+    rgba(10, 10, 11, 0.72) 31%,
+    rgba(10, 10, 11, 0.55) 45%,
+    rgba(10, 10, 11, 0.36) 59%,
+    rgba(10, 10, 11, 0.2) 73%,
+    rgba(10, 10, 11, 0.08) 87%,
+    rgba(10, 10, 11, 0) 100%
+  );
 }
 
 .timeline {
@@ -179,6 +223,8 @@ body {
   display: flex;
   align-items: center;
   cursor: pointer;
+  /* Иначе система перехватит жест как прокрутку и перетаскивание оборвётся */
+  touch-action: none;
 }
 
 .timeline__track {
@@ -190,7 +236,8 @@ body {
   transition: height var(--dur-fast) var(--ease);
 }
 
-.timeline:hover .timeline__track {
+.timeline:hover .timeline__track,
+.timeline[data-scrubbing='true'] .timeline__track {
   height: 5px;
 }
 
@@ -219,8 +266,67 @@ body {
   transition: transform var(--dur-fast) var(--ease);
 }
 
-.timeline:hover .timeline__thumb {
+.timeline:hover .timeline__thumb,
+.timeline[data-scrubbing='true'] .timeline__thumb {
   transform: translate(-50%, -50%) scale(1);
+}
+
+/* ---------- Громкость ---------- */
+
+.volume {
+  display: flex;
+  align-items: center;
+}
+
+/*
+ * Ползунок раскрывается при наведении на группу и остаётся раскрытым, пока
+ * внутри есть фокус — иначе управление с клавиатуры было бы вслепую.
+ */
+.volume__slider {
+  position: relative;
+  width: 0;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  overflow: hidden;
+  cursor: pointer;
+  touch-action: none;
+  transition: width var(--dur-base) var(--ease), opacity var(--dur-fast) var(--ease),
+    margin var(--dur-base) var(--ease);
+}
+
+.volume:hover .volume__slider,
+.volume:focus-within .volume__slider {
+  width: 78px;
+  opacity: 1;
+  margin-right: 6px;
+}
+
+.volume__track {
+  position: relative;
+  width: 100%;
+  height: 3px;
+  margin: 0 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.volume__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--text-hi);
+}
+
+.volume__thumb {
+  position: absolute;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #fff;
+  transform: translate(-50%, -50%);
 }
 
 .controls {
@@ -331,6 +437,69 @@ kbd {
   font-family: inherit;
   font-size: 11px;
   color: var(--text-hi);
+}
+
+/* ---------- Подсказка о действии ---------- */
+
+/*
+ * Живёт вне слоя хрома: подсказка должна появляться и тогда, когда хром скрыт,
+ * иначе перемотка вслепую останется без обратной связи.
+ */
+.osd {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: rgba(19, 19, 22, 0.9);
+  color: var(--text-hi);
+  pointer-events: none;
+  animation: osd-flash 1100ms var(--ease) forwards;
+}
+
+.osd__label {
+  font-size: 15px;
+  font-weight: 500;
+  min-width: 46px;
+  text-align: center;
+}
+
+.osd__meter {
+  position: relative;
+  width: 90px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  overflow: hidden;
+}
+
+.osd__meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--text-hi);
+}
+
+@keyframes osd-flash {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.96);
+  }
+  12% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 /* ---------- Диагностика спайка ---------- */

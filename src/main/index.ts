@@ -78,6 +78,22 @@ function syncOverlayBounds(): void {
 }
 
 /**
+ * Единственный источник правды о состоянии окна для интерфейса.
+ *
+ * Читаем его у самого окна, а не запоминаем при переключении: развернуть или
+ * выйти из полного экрана можно и мимо наших кнопок — через Aero Snap,
+ * двойной клик или системные сочетания.
+ */
+function emitWindowState(): void {
+  if (!hostWindow || !overlayWindow || overlayWindow.isDestroyed()) return
+  syncOverlayBounds()
+  overlayWindow.webContents.send('window:state', {
+    fullscreen: hostWindow.isFullScreen(),
+    maximized: hostWindow.isMaximized()
+  })
+}
+
+/**
  * Держит оверлей над host.
  *
  * Одной привязки parent недостаточно: при активации host через панель задач
@@ -166,8 +182,10 @@ function createWindows(): void {
   hostWindow.on('restore', syncOverlayBounds)
   hostWindow.on('maximize', syncOverlayBounds)
   hostWindow.on('unmaximize', syncOverlayBounds)
-  hostWindow.on('enter-full-screen', syncOverlayBounds)
-  hostWindow.on('leave-full-screen', syncOverlayBounds)
+  hostWindow.on('enter-full-screen', emitWindowState)
+  hostWindow.on('leave-full-screen', emitWindowState)
+  hostWindow.on('maximize', emitWindowState)
+  hostWindow.on('unmaximize', emitWindowState)
 
   hostWindow.on('focus', raiseOverlay)
   hostWindow.on('show', raiseOverlay)
@@ -245,6 +263,11 @@ ipcMain.handle('window:toggleFullscreen', () => {
   return next
 })
 
+ipcMain.handle('window:state', () => ({
+  fullscreen: hostWindow?.isFullScreen() ?? false,
+  maximized: hostWindow?.isMaximized() ?? false
+}))
+
 ipcMain.handle('window:minimize', () => hostWindow?.minimize())
 ipcMain.handle('window:close', () => hostWindow?.close())
 
@@ -273,6 +296,15 @@ ipcMain.handle('window:dragEnd', () => {
 
 ipcMain.handle('window:toggleMaximize', () => {
   if (!hostWindow) return
+
+  // Из полного экрана эта кнопка просто возвращает окно: разворачивать
+  // что-то поверх полного экрана бессмысленно, а Windows при этом не шлёт
+  // leave-full-screen — интерфейс оставался бы с иконкой выхода навсегда.
+  if (hostWindow.isFullScreen()) {
+    hostWindow.setFullScreen(false)
+    return
+  }
+
   if (hostWindow.isMaximized()) hostWindow.unmaximize()
   else hostWindow.maximize()
 })
