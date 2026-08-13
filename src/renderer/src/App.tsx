@@ -125,8 +125,8 @@ export function App(): JSX.Element {
           </button>
           <button
             className="titlebar__button"
-            onClick={() => void window.keyframe.window.toggleFullscreen()}
-            aria-label="Полный экран"
+            onClick={() => void window.keyframe.window.toggleMaximize()}
+            aria-label="Развернуть"
           >
             <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
               <rect x="0.6" y="0.6" width="8.8" height="8.8" stroke="currentColor" strokeWidth="1.2" />

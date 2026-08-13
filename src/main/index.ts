@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
+import { app, BrowserWindow, Menu, ipcMain, dialog, shell } from 'electron'
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Mpv } from './mpv'
@@ -38,6 +39,33 @@ function mpvExecutablePath(): string {
     : path.join(process.resourcesPath, 'mpv', 'mpv.exe')
 }
 
+/**
+ * Что открыть при запуске: файл из «Открыть с помощью» или переменная
+ * окружения для отладки.
+ *
+ * Проверка на обычный файл здесь обязательна. Без неё в режиме разработки
+ * сюда попадал путь до папки проекта из argv, mpv раскрывал её в плейлист и
+ * начинал перебирать содержимое node_modules файл за файлом.
+ */
+function fileToOpenAtStartup(): string | null {
+  const candidates = [process.env.KEYFRAME_OPEN, ...process.argv.slice(1)]
+
+  for (const candidate of candidates) {
+    if (!candidate || candidate.startsWith('-')) continue
+
+    // Сетевые потоки существуют не на диске — их пропускаем через проверку
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) return candidate
+
+    try {
+      if (fs.statSync(candidate).isFile()) return candidate
+    } catch {
+      // не путь или недоступен — не наш случай
+    }
+  }
+
+  return null
+}
+
 /** HWND лежит в буфере как 64-битное целое (x64 Windows). */
 function nativeHandleOf(win: BrowserWindow): string {
   return win.getNativeWindowHandle().readBigUInt64LE(0).toString()
@@ -49,6 +77,24 @@ function syncOverlayBounds(): void {
   overlayWindow.setBounds(bounds)
 }
 
+/**
+ * Держит оверлей над host.
+ *
+ * Одной привязки parent недостаточно: при активации host через панель задач
+ * или Alt+Tab он на мгновение оказывается выше своего же оверлея, и интерфейс
+ * пропадает до следующей перерисовки. Поэтому на каждом показе и получении
+ * фокуса поднимаем оверлей принудительно.
+ *
+ * showInactive, а не show: иначе фокус уйдёт на оверлей, а клавиатуру должен
+ * получать host.
+ */
+function raiseOverlay(): void {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return
+  syncOverlayBounds()
+  if (!overlayWindow.isVisible()) overlayWindow.showInactive()
+  overlayWindow.moveTop()
+}
+
 function createWindows(): void {
   hostWindow = new BrowserWindow({
     width: 1280,
@@ -57,8 +103,14 @@ function createWindows(): void {
     minHeight: 360,
     backgroundColor: '#0A0A0B',
     title: 'Keyframe',
+    // Рамку и заголовок рисуем сами в оверлее. thickFrame оставляем включённым,
+    // иначе пропадут изменение размера за края, Aero Snap и анимация сворачивания.
+    frame: false,
     show: false
   })
+
+  // Меню Alt-клавишей безрамочному окну не нужно
+  Menu.setApplicationMenu(null)
 
   // Host не показывает ничего своего — весь его клиентский прямоугольник займёт mpv.
   // Если этот фон когда-нибудь станет виден, значит дочернее окно mpv перекрыто.
@@ -113,6 +165,12 @@ function createWindows(): void {
   hostWindow.on('enter-full-screen', syncOverlayBounds)
   hostWindow.on('leave-full-screen', syncOverlayBounds)
 
+  hostWindow.on('focus', raiseOverlay)
+  hostWindow.on('show', raiseOverlay)
+  hostWindow.on('restore', raiseOverlay)
+  // Свёрнутое окно не должно оставлять на экране висящий прозрачный оверлей
+  hostWindow.on('minimize', () => overlayWindow?.hide())
+
   hostWindow.on('closed', () => {
     mpv?.stop()
     mpv = null
@@ -126,8 +184,7 @@ function createWindows(): void {
 
   hostWindow.once('ready-to-show', async () => {
     hostWindow!.show()
-    syncOverlayBounds()
-    overlayWindow!.show()
+    raiseOverlay()
     await startMpv()
   })
 }
@@ -152,9 +209,7 @@ async function startMpv(): Promise<void> {
     await mpv.start()
     overlayWindow?.webContents.send('mpv:ready')
 
-    // Путь или URL, открываемый сразу при запуске. Нужен для отладки и тестов,
-    // чтобы не проходить каждый раз через диалог открытия файла.
-    const autoOpen = process.env.KEYFRAME_OPEN ?? process.argv.slice(1).find((a) => !a.startsWith('-'))
+    const autoOpen = fileToOpenAtStartup()
     if (autoOpen) await mpv.loadFile(autoOpen)
   } catch (err) {
     dialog.showErrorBox('Keyframe', `Не удалось запустить движок воспроизведения:\n${String(err)}`)
