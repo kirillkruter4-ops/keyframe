@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 export interface WindowState {
   fullscreen: boolean
   maximized: boolean
+  alwaysOnTop: boolean
 }
 
 export type UpdateStatus =
@@ -45,7 +46,29 @@ const api = {
       return () => {
         ipcRenderer.off('mpv:exit', handler)
       }
-    }
+    },
+
+    /** События mpv как есть: end-file, file-loaded и прочее. */
+    onEvent: (cb: (name: string, data: Record<string, unknown>) => void): (() => void) => {
+      const handler = (_e: unknown, name: string, data: Record<string, unknown>) => cb(name, data)
+      ipcRenderer.on('mpv:event', handler)
+      return () => {
+        ipcRenderer.off('mpv:event', handler)
+      }
+    },
+
+    /** Главный процесс вернул нас к прошлой позиции — интерфейс сообщает об этом. */
+    onResumed: (cb: (position: number) => void): (() => void) => {
+      const handler = (_e: unknown, position: number) => cb(position)
+      ipcRenderer.on('mpv:resumed', handler)
+      return () => {
+        ipcRenderer.off('mpv:resumed', handler)
+      }
+    },
+
+    restart: () => ipcRenderer.invoke('mpv:restart'),
+
+    screenshot: () => ipcRenderer.invoke('mpv:screenshot') as Promise<string | null>
   },
 
   update: {
@@ -67,12 +90,18 @@ const api = {
 
   openFile: () => ipcRenderer.invoke('dialog:openFile') as Promise<string | null>,
 
+  openSubtitle: () => ipcRenderer.invoke('dialog:openSubtitle') as Promise<string | null>,
+
+  /** Показать сохранённый снимок в проводнике. */
+  showItem: (target: string) => ipcRenderer.invoke('shell:showItem', target),
+
   // File.path из renderer убрали начиная с Electron 32 — путь отдаёт только webUtils
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
 
   window: {
     toggleFullscreen: () => ipcRenderer.invoke('window:toggleFullscreen') as Promise<boolean>,
     toggleMaximize: () => ipcRenderer.invoke('window:toggleMaximize'),
+    toggleAlwaysOnTop: () => ipcRenderer.invoke('window:toggleAlwaysOnTop') as Promise<boolean>,
     minimize: () => ipcRenderer.invoke('window:minimize'),
     close: () => ipcRenderer.invoke('window:close'),
     dragStart: (x: number, y: number) => ipcRenderer.invoke('window:dragStart', x, y),

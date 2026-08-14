@@ -23,7 +23,18 @@ const OBSERVED = [
   'video-params/h',
   'hwdec-current',
   'frame-drop-count',
-  'estimated-vf-fps'
+  'estimated-vf-fps',
+  'speed',
+  // Дорожки приходят одним массивом; выбранные читаем отдельно, потому что
+  // track-list не переприсылается при простой смене sid/aid
+  'track-list',
+  'sid',
+  'aid',
+  'sub-visibility',
+  'sub-delay',
+  'audio-delay',
+  'loop-file',
+  'video-aspect-override'
 ] as const
 
 export type MpvProperty = (typeof OBSERVED)[number]
@@ -219,6 +230,10 @@ export class Mpv extends EventEmitter {
 
   loadFile(path: string): Promise<unknown> {
     return this.command('loadfile', path, 'replace')
+  }
+
+  getProperty(name: string): Promise<unknown> {
+    return this.command('get_property', name)
   }
 
   get isRunning(): boolean {

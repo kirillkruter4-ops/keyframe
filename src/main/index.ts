@@ -1,9 +1,21 @@
-import { app, BrowserWindow, Menu, ipcMain, dialog, shell } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  Menu,
+  ipcMain,
+  dialog,
+  shell,
+  screen,
+  nativeImage,
+  globalShortcut,
+  powerSaveBlocker
+} from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Mpv } from './mpv'
 import { setupUpdater } from './updater'
+import { Store } from './store'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
@@ -33,11 +45,28 @@ app.commandLine.appendSwitch('disable-direct-composition')
 let hostWindow: BrowserWindow | null = null
 let overlayWindow: BrowserWindow | null = null
 let mpv: Mpv | null = null
+let store: Store | null = null
+
+/**
+ * Вторая копия приложения не нужна: у неё будет свой mpv, свой GPU-контекст и
+ * своё окно, а пользователь всего лишь открыл ещё один файл через ассоциацию.
+ * Файл из аргументов второй копии загружаем в уже запущенную.
+ *
+ * Замок берётся до whenReady: проигравшая копия должна закрыться, не успев
+ * создать окно.
+ */
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+}
+
+function resourcePath(...segments: string[]): string {
+  return isDev
+    ? path.join(app.getAppPath(), 'resources', ...segments)
+    : path.join(process.resourcesPath, ...segments)
+}
 
 function mpvExecutablePath(): string {
-  return isDev
-    ? path.join(app.getAppPath(), 'resources', 'mpv', 'mpv.exe')
-    : path.join(process.resourcesPath, 'mpv', 'mpv.exe')
+  return resourcePath('mpv', 'mpv.exe')
 }
 
 /**
@@ -48,8 +77,8 @@ function mpvExecutablePath(): string {
  * сюда попадал путь до папки проекта из argv, mpv раскрывал её в плейлист и
  * начинал перебирать содержимое node_modules файл за файлом.
  */
-function fileToOpenAtStartup(): string | null {
-  const candidates = [process.env.KEYFRAME_OPEN, ...process.argv.slice(1)]
+function fileToOpen(argv: string[]): string | null {
+  const candidates = [process.env.KEYFRAME_OPEN, ...argv.slice(1)]
 
   for (const candidate of candidates) {
     if (!candidate || candidate.startsWith('-')) continue
@@ -90,8 +119,21 @@ function emitWindowState(): void {
   syncOverlayBounds()
   overlayWindow.webContents.send('window:state', {
     fullscreen: hostWindow.isFullScreen(),
-    maximized: hostWindow.isMaximized()
+    maximized: hostWindow.isMaximized(),
+    alwaysOnTop: hostWindow.isAlwaysOnTop()
   })
+}
+
+/**
+ * Windows сообщает о смене состояния окна раньше, чем окно её совершает:
+ * внутри обработчика enter-full-screen окно ещё не полноэкранное, а внутри
+ * leave-full-screen — ещё полноэкранное. Прочитанное там значение уходило бы в
+ * интерфейс перевёрнутым, и кнопка показывала бы выход из режима, в котором
+ * окно уже не находится. Поэтому читаем состояние следующим тиком, когда
+ * переход завершён.
+ */
+function deferWindowState(): void {
+  setImmediate(emitWindowState)
 }
 
 /**
@@ -112,10 +154,47 @@ function raiseOverlay(): void {
   overlayWindow.moveTop()
 }
 
+/**
+ * Сохранённая геометрия, если она всё ещё попадает на существующий экран.
+ *
+ * Монитор могли отключить: окно, восстановленное на координатах отсутствующего
+ * второго экрана, откроется за пределами видимой области, и найти его можно
+ * будет только через клавиатуру.
+ */
+function restoredBounds(): { x: number; y: number; width: number; height: number } | null {
+  const saved = store?.window
+  if (!saved) return null
+
+  const fits = screen.getAllDisplays().some((display) => {
+    const area = display.workArea
+    return (
+      saved.x < area.x + area.width &&
+      saved.x + saved.width > area.x &&
+      saved.y < area.y + area.height &&
+      saved.y + saved.height > area.y
+    )
+  })
+
+  return fits ? { x: saved.x, y: saved.y, width: saved.width, height: saved.height } : null
+}
+
+function rememberBounds(): void {
+  if (!hostWindow || hostWindow.isFullScreen()) return
+
+  // В развёрнутом состоянии getBounds отдаёт размер во весь экран; запоминаем
+  // тот, что был до разворачивания, иначе окно уже никогда не станет обычным
+  const bounds = hostWindow.isMaximized() ? hostWindow.getNormalBounds() : hostWindow.getBounds()
+  store?.setWindow({ ...bounds, maximized: hostWindow.isMaximized() })
+}
+
 function createWindows(): void {
+  const saved = restoredBounds()
+
   hostWindow = new BrowserWindow({
-    width: 1280,
-    height: 720,
+    width: saved?.width ?? 1280,
+    height: saved?.height ?? 720,
+    x: saved?.x,
+    y: saved?.y,
     minWidth: 640,
     minHeight: 360,
     backgroundColor: '#0A0A0B',
@@ -180,21 +259,36 @@ function createWindows(): void {
 
   hostWindow.on('resize', syncOverlayBounds)
   hostWindow.on('move', syncOverlayBounds)
+  hostWindow.on('resize', rememberBounds)
+  hostWindow.on('move', rememberBounds)
+  hostWindow.on('maximize', rememberBounds)
+  hostWindow.on('unmaximize', rememberBounds)
   hostWindow.on('restore', syncOverlayBounds)
   hostWindow.on('maximize', syncOverlayBounds)
   hostWindow.on('unmaximize', syncOverlayBounds)
-  hostWindow.on('enter-full-screen', emitWindowState)
-  hostWindow.on('leave-full-screen', emitWindowState)
-  hostWindow.on('maximize', emitWindowState)
-  hostWindow.on('unmaximize', emitWindowState)
+
+  hostWindow.on('enter-full-screen', deferWindowState)
+  hostWindow.on('leave-full-screen', deferWindowState)
+  hostWindow.on('maximize', deferWindowState)
+  hostWindow.on('unmaximize', deferWindowState)
+  hostWindow.on('restore', deferWindowState)
+  // Последнее слово за resize: он приходит уже после самого перехода,
+  // когда окно наконец отвечает о себе правду
+  hostWindow.on('resize', deferWindowState)
 
   hostWindow.on('focus', raiseOverlay)
+  hostWindow.on('focus', registerMediaKeys)
+  hostWindow.on('blur', unregisterMediaKeys)
   hostWindow.on('show', raiseOverlay)
   hostWindow.on('restore', raiseOverlay)
   // Свёрнутое окно не должно оставлять на экране висящий прозрачный оверлей
   hostWindow.on('minimize', () => overlayWindow?.hide())
 
   hostWindow.on('closed', () => {
+    savePosition()
+    store?.flush()
+    unregisterMediaKeys()
+    releasePowerBlocker()
     mpv?.stop()
     mpv = null
     hostWindow = null
@@ -205,33 +299,255 @@ function createWindows(): void {
   setupUpdater(overlayWindow)
 
   hostWindow.once('ready-to-show', async () => {
+    if (store?.window?.maximized) hostWindow!.maximize()
     hostWindow!.show()
     raiseOverlay()
+    updateThumbar()
+    // Окно стало активным без события focus: оно и так открылось поверх
+    registerMediaKeys()
     await startMpv()
   })
 }
 
+// ---------- Питание, панель задач, медиа-клавиши ----------
+
+let powerBlockerId: number | null = null
+
+/**
+ * Пока идёт воспроизведение, Windows не должна гасить экран и засыпать:
+ * фильм смотрят, не трогая мышь, и через десять минут система решила бы,
+ * что за компьютером никого нет.
+ */
+function updatePowerBlocker(playing: boolean): void {
+  if (playing) {
+    if (powerBlockerId === null) {
+      powerBlockerId = powerSaveBlocker.start('prevent-display-sleep')
+    }
+    return
+  }
+  releasePowerBlocker()
+}
+
+function releasePowerBlocker(): void {
+  if (powerBlockerId !== null && powerSaveBlocker.isStarted(powerBlockerId)) {
+    powerSaveBlocker.stop(powerBlockerId)
+  }
+  powerBlockerId = null
+}
+
+function thumbarIcon(name: string): Electron.NativeImage {
+  return nativeImage.createFromPath(resourcePath('thumbar', `${name}.png`))
+}
+
+let thumbarPaused: boolean | null = null
+
+/**
+ * Кнопки на превью окна в панели задач: то же, что нижняя панель, но не
+ * разворачивая окно.
+ *
+ * Перерисовываем только на смене паузы. core-idle дёргается при каждой
+ * подгрузке буфера, и панель задач успевала бы моргать иконкой на ровном месте.
+ */
+function updateThumbar(): void {
+  if (!hostWindow || hostWindow.isDestroyed()) return
+
+  const paused = mpv?.state.pause !== false
+  if (paused === thumbarPaused) return
+  thumbarPaused = paused
+
+  hostWindow.setThumbarButtons([
+    {
+      tooltip: 'Назад на 10 секунд',
+      icon: thumbarIcon('back'),
+      click: () => void mpv?.command('seek', -10, 'relative')
+    },
+    {
+      tooltip: paused ? 'Играть' : 'Пауза',
+      icon: thumbarIcon(paused ? 'play' : 'pause'),
+      click: () => void mpv?.command('cycle', 'pause')
+    },
+    {
+      tooltip: 'Вперёд на 10 секунд',
+      icon: thumbarIcon('forward'),
+      click: () => void mpv?.command('seek', 10, 'relative')
+    }
+  ])
+}
+
+let progressShown = -1
+
+/** Полоска на иконке в панели задач повторяет таймлайн. */
+function updateTaskbarProgress(): void {
+  if (!hostWindow || hostWindow.isDestroyed()) return
+
+  const duration = Number(mpv?.state.duration) || 0
+  const position = Number(mpv?.state['time-pos']) || 0
+  const value = duration > 0 ? Math.min(1, position / duration) : -1
+
+  // Округляем до процента: чаще перерисовывать нечего, а вызов не бесплатный
+  const rounded = value < 0 ? -1 : Math.round(value * 100) / 100
+  const paused = mpv?.state.pause !== false
+  if (rounded === progressShown) return
+  progressShown = rounded
+
+  hostWindow.setProgressBar(rounded, { mode: rounded < 0 ? 'none' : paused ? 'paused' : 'normal' })
+}
+
+/**
+ * Медиа-клавиши регистрируются только пока окно активно.
+ *
+ * Глобальный перехват отбирал бы их у Spotify и браузера всё время, пока
+ * Keyframe открыт в фоне, — для плеера, который может стоять на паузе часами,
+ * это недопустимо.
+ */
+function registerMediaKeys(): void {
+  const bind = (accelerator: string, action: () => void): void => {
+    try {
+      globalShortcut.register(accelerator, action)
+    } catch {
+      // Клавишу уже занял кто-то другой — не повод падать
+    }
+  }
+
+  bind('MediaPlayPause', () => void mpv?.command('cycle', 'pause'))
+  bind('MediaStop', () => void mpv?.setProperty('pause', true))
+  bind('MediaNextTrack', () => void mpv?.command('seek', 30, 'relative'))
+  bind('MediaPreviousTrack', () => void mpv?.command('seek', -30, 'relative'))
+}
+
+function unregisterMediaKeys(): void {
+  for (const key of ['MediaPlayPause', 'MediaStop', 'MediaNextTrack', 'MediaPreviousTrack']) {
+    globalShortcut.unregister(key)
+  }
+}
+
+// ---------- Позиция просмотра ----------
+
+/** Путь файла, который сейчас играет: по нему запоминается позиция. */
+let currentFile: string | null = null
+let lastSavedAt = 0
+
+function savePosition(): void {
+  if (!currentFile || !mpv) return
+  const position = Number(mpv.state['time-pos'])
+  const duration = Number(mpv.state.duration)
+  if (!Number.isFinite(position) || !Number.isFinite(duration)) return
+  store?.rememberPosition(currentFile, position, duration)
+}
+
+/**
+ * Возврат к тому месту, где бросили.
+ *
+ * Прыжок делается сразу после загрузки, на паузе или нет — неважно: mpv к
+ * этому моменту уже знает длительность, и переход не виден как рывок.
+ */
+async function resumeIfNeeded(): Promise<void> {
+  if (!mpv) return
+
+  // Путь обычно приходит наблюдателем раньше события загрузки, но полагаться
+  // на порядок незачем: он есть и в состоянии
+  if (!currentFile && typeof mpv.state.path === 'string') currentFile = mpv.state.path
+  if (!currentFile) return
+
+  const duration = Number(await mpv.getProperty('duration').catch(() => null))
+  if (!Number.isFinite(duration) || duration <= 0) return
+
+  const position = store?.positionFor(currentFile, duration) ?? null
+  if (position === null) return
+
+  await mpv.command('seek', position, 'absolute').catch(() => undefined)
+  overlayWindow?.webContents.send('mpv:resumed', position)
+}
+
+/**
+ * Пока не выставлена сохранённая громкость, менять её в хранилище нельзя.
+ *
+ * Сразу после подписки mpv присылает свои значения по умолчанию — сотню и
+ * выключенный mute. Без этого флага они успели бы записаться поверх
+ * сохранённых, и громкость не пережила бы ни одного перезапуска.
+ */
+let audioRestored = false
+
 async function startMpv(): Promise<void> {
   if (!hostWindow) return
+
+  audioRestored = false
+  // Кэш панели задач относился к прошлому процессу mpv
+  thumbarPaused = null
+  progressShown = -1
+
+  const desiredVolume = store?.volume ?? 100
+  const desiredMute = store?.muted ?? false
 
   mpv = new Mpv(mpvExecutablePath(), nativeHandleOf(hostWindow))
 
   mpv.on('property', (name: string, value: unknown) => {
     overlayWindow?.webContents.send('mpv:property', name, value)
+
+    switch (name) {
+      case 'pause':
+      case 'core-idle':
+        updatePowerBlocker(mpv?.state.pause === false && mpv?.state['core-idle'] === false)
+        updateThumbar()
+        updateTaskbarProgress()
+        // Пауза — самый вероятный момент закрыть окно силой, запоминаем сразу
+        if (name === 'pause') savePosition()
+        break
+
+      case 'time-pos':
+        updateTaskbarProgress()
+        // Позицию пишем раз в несколько секунд: она меняется каждый кадр
+        if (Date.now() - lastSavedAt > 5000) {
+          lastSavedAt = Date.now()
+          savePosition()
+        }
+        break
+
+      case 'volume':
+      case 'mute':
+        if (audioRestored) {
+          store?.setAudio(Number(mpv?.state.volume ?? 100), Boolean(mpv?.state.mute))
+        }
+        break
+
+      case 'path':
+        if (typeof value === 'string') currentFile = value
+        break
+    }
   })
+
+  mpv.on('mpv-event', (name: string, data: Record<string, unknown>) => {
+    overlayWindow?.webContents.send('mpv:event', name, data)
+
+    if (name === 'file-loaded') void resumeIfNeeded()
+
+    // Досмотренный до конца файл открывать с середины больше не нужно
+    if (name === 'end-file' && data.reason === 'eof' && currentFile) {
+      store?.forgetPosition(currentFile)
+    }
+  })
+
   mpv.on('log', (line: string) => {
     if (isDev) console.log('[mpv]', line)
     overlayWindow?.webContents.send('mpv:log', line)
   })
   mpv.on('exit', (info: unknown) => {
+    releasePowerBlocker()
     overlayWindow?.webContents.send('mpv:exit', info)
   })
 
   try {
     await mpv.start()
+
+    // Громкость восстанавливаем до загрузки файла: иначе первые секунды
+    // прозвучат на чужом уровне
+    await mpv.setProperty('volume', desiredVolume)
+    await mpv.setProperty('mute', desiredMute)
+    audioRestored = true
+
     overlayWindow?.webContents.send('mpv:ready')
 
-    const autoOpen = fileToOpenAtStartup()
+    const autoOpen = fileToOpen(process.argv)
     if (autoOpen) await mpv.loadFile(autoOpen)
   } catch (err) {
     dialog.showErrorBox('Keyframe', `Не удалось запустить движок воспроизведения:\n${String(err)}`)
@@ -243,6 +559,46 @@ async function startMpv(): Promise<void> {
 ipcMain.handle('mpv:command', (_e, args: unknown[]) => mpv?.command(...args))
 ipcMain.handle('mpv:set', (_e, name: string, value: unknown) => mpv?.setProperty(name, value))
 ipcMain.handle('mpv:state', () => mpv?.state ?? {})
+
+/**
+ * Перезапуск движка после падения. Окно то же самое, поэтому mpv получает тот
+ * же HWND и рисует туда, куда рисовал: пересоздавать окно не нужно.
+ */
+ipcMain.handle('mpv:restart', async () => {
+  mpv?.stop()
+  mpv = null
+  currentFile = null
+  await startMpv()
+})
+
+/**
+ * Снимок кадра.
+ *
+ * Кладём в «Изображения/Keyframe» — в рабочую папку процесса, куда mpv пишет по
+ * умолчанию, пользователь не заглянет никогда. Флаг subtitles берёт кадр с
+ * субтитрами, но без нашего интерфейса: интерфейса mpv всё равно не видит.
+ */
+ipcMain.handle('mpv:screenshot', async () => {
+  if (!mpv) return null
+
+  const dir = path.join(app.getPath('pictures'), 'Keyframe')
+  fs.mkdirSync(dir, { recursive: true })
+
+  const source = typeof mpv.state.filename === 'string' ? mpv.state.filename : 'keyframe'
+  const base = path.parse(source).name.slice(0, 60).replace(/[\\/:*?"<>|]/g, '_')
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const target = path.join(dir, `${base} ${stamp}.png`)
+
+  try {
+    await mpv.command('screenshot-to-file', target, 'subtitles')
+    return target
+  } catch (err) {
+    console.error('[screenshot]', err)
+    return null
+  }
+})
+
+ipcMain.handle('shell:showItem', (_e, target: string) => shell.showItemInFolder(target))
 
 ipcMain.handle('dialog:openFile', async () => {
   if (!hostWindow) return null
@@ -259,6 +615,22 @@ ipcMain.handle('dialog:openFile', async () => {
   return filePaths[0]
 })
 
+ipcMain.handle('dialog:openSubtitle', async () => {
+  if (!hostWindow) return null
+  const { canceled, filePaths } = await dialog.showOpenDialog(hostWindow, {
+    title: 'Выбрать файл субтитров',
+    properties: ['openFile'],
+    filters: [
+      { name: 'Субтитры', extensions: ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'idx'] },
+      { name: 'Все файлы', extensions: ['*'] }
+    ]
+  })
+  if (canceled || filePaths.length === 0) return null
+  // select, а не auto: файл выбрали руками, значит хотят видеть его прямо сейчас
+  await mpv?.command('sub-add', filePaths[0], 'select')
+  return filePaths[0]
+})
+
 ipcMain.handle('window:toggleFullscreen', () => {
   if (!hostWindow) return false
   const next = !hostWindow.isFullScreen()
@@ -270,8 +642,23 @@ ipcMain.handle('app:version', () => app.getVersion())
 
 ipcMain.handle('window:state', () => ({
   fullscreen: hostWindow?.isFullScreen() ?? false,
-  maximized: hostWindow?.isMaximized() ?? false
+  maximized: hostWindow?.isMaximized() ?? false,
+  alwaysOnTop: hostWindow?.isAlwaysOnTop() ?? false
 }))
+
+/**
+ * Поверх всех окон. Флаг ставится только на host: оверлей — его дочернее окно
+ * и поднимается вместе с ним, а собственный alwaysOnTop сделал бы интерфейс
+ * видимым даже поверх чужих окон, закрывших видео.
+ */
+ipcMain.handle('window:toggleAlwaysOnTop', () => {
+  if (!hostWindow) return false
+  const next = !hostWindow.isAlwaysOnTop()
+  hostWindow.setAlwaysOnTop(next)
+  raiseOverlay()
+  emitWindowState()
+  return next
+})
 
 ipcMain.handle('window:minimize', () => hostWindow?.minimize())
 ipcMain.handle('window:close', () => hostWindow?.close())
@@ -316,7 +703,25 @@ ipcMain.handle('window:toggleMaximize', () => {
 
 // ---------- Жизненный цикл ----------
 
+/**
+ * Файл, открытый второй копией, играет уже запущенная. Окно при этом надо
+ * поднять и развернуть из свёрнутого: пользователь щёлкнул по файлу и ждёт,
+ * что плеер окажется перед ним.
+ */
+app.on('second-instance', (_e, argv) => {
+  if (!hostWindow) return
+
+  if (hostWindow.isMinimized()) hostWindow.restore()
+  hostWindow.focus()
+  raiseOverlay()
+
+  const file = fileToOpen(argv)
+  if (file) void mpv?.loadFile(file)
+})
+
 app.whenReady().then(() => {
+  store = new Store()
+
   app.on('web-contents-created', (_e, contents) => {
     // Внешние ссылки — в системный браузер, никогда внутрь приложения
     contents.setWindowOpenHandler(({ url }) => {
@@ -325,6 +730,13 @@ app.whenReady().then(() => {
     })
   })
   createWindows()
+})
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
+  releasePowerBlocker()
+  savePosition()
+  store?.flush()
 })
 
 app.on('window-all-closed', () => {
