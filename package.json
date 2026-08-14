@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "preview": "electron-vite preview",
     "icon": "node scripts/make-icon.mjs",
+    "thumbar": "node scripts/make-thumbar.mjs",
     "dist": "electron-vite build && electron-builder --win",
     "dist:local": "electron-vite build && node scripts/dist-local.mjs"
   },

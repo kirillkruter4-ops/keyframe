@@ -22,6 +22,9 @@ extraResources:
       - '!*.bat'
   - from: resources/logo.svg
     to: logo.svg
+  # Иконки кнопок на превью в панели задач: Windows читает их как файлы
+  - from: resources/thumbar
+    to: thumbar
 
 asar: true
 
