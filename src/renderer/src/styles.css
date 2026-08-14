@@ -575,35 +575,401 @@ kbd {
   }
 }
 
-/* ---------- Диагностика спайка ---------- */
+/* ---------- Дорожки ---------- */
 
-.diag {
+.tracks {
+  position: relative;
+}
+
+/*
+ * Панель раскрывается вверх от своей кнопки: снизу места нет, там край окна.
+ * Ширину ограничиваем — названия дорожек в mkv бывают на строку экрана.
+ */
+.tracks__panel {
   position: absolute;
-  top: calc(var(--titlebar-height) + 12px);
-  right: 12px;
-  padding: 10px 12px;
+  right: 0;
+  bottom: calc(100% + 8px);
+  min-width: 200px;
+  max-width: 340px;
+  padding: 6px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: rgba(19, 19, 22, 0.92);
-  font-size: 11.5px;
-  line-height: 1.85;
+  background: rgba(19, 19, 22, 0.96);
+  animation: tracks-in var(--dur-base) var(--ease);
+}
+
+.tracks__title {
+  padding: 8px 10px 4px;
+  font-size: 11px;
+  font-weight: 550;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.tracks__item {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 7px 10px 7px 24px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--text-lo);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
 }
 
-.diag__row {
-  display: flex;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-.diag__value {
+.tracks__item:hover {
+  background: rgba(255, 255, 255, 0.08);
   color: var(--text-hi);
 }
 
-.diag__value--ok {
+.tracks__item[data-selected='true'] {
+  color: var(--text-hi);
+}
+
+/* Галочка рисуется псевдоэлементом: так текст выбранной строки не сдвигается */
+.tracks__item[data-selected='true']::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: var(--accent-text);
+}
+
+.tracks__add {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  background: transparent;
+  color: var(--text-lo);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tracks__add:hover {
+  color: var(--text-hi);
+}
+
+.control[data-active='true'] {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+/* Кнопка скорости показывает число, а не значок, и по ширине не квадратная */
+.control--text {
+  width: auto;
+  min-width: 40px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-lo);
+}
+
+.control--text:hover {
+  color: var(--text-hi);
+}
+
+@keyframes tracks-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- Меню по правой кнопке ---------- */
+
+.menu {
+  position: absolute;
+  z-index: 10;
+  min-width: 218px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(19, 19, 22, 0.97);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  /* Меню появляется уже на своём месте: до измерения оно прозрачно */
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+/* Крайний случай низкого окна: подменю при этом обрежется, но лучше так,
+   чем недостижимая нижняя половина меню */
+.menu[data-scroll='true'] {
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+}
+
+.menu__item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 6px 10px 6px 24px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-lo);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu__item:hover,
+.menu__parent:hover > .menu__item {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-hi);
+}
+
+.menu__item:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.menu__item:disabled:hover {
+  background: transparent;
+}
+
+.menu__item[data-checked='true'] {
+  color: var(--text-hi);
+}
+
+.menu__item[data-checked='true']::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: var(--accent-text);
+}
+
+.menu__label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Сочетание клавиш и текущее значение справа — подсказка, а не заголовок */
+.menu__hint {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.menu__arrow {
+  flex: none;
+  color: var(--text-dim);
+}
+
+.menu__sep {
+  height: 1px;
+  margin: 5px 8px;
+  background: var(--border);
+}
+
+.menu__parent {
+  position: relative;
+}
+
+/*
+ * Подменю раскрывается наведением на родительскую строку. Оно перекрывает её
+ * край на пиксель: разрыв между строкой и подменю ловил бы курсор по дороге и
+ * подменю закрывалось бы на полпути.
+ */
+.menu__sub {
+  display: none;
+  position: absolute;
+  left: calc(100% - 1px);
+  top: -5px;
+  min-width: 190px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(19, 19, 22, 0.97);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+.menu__parent:hover > .menu__sub {
+  display: block;
+}
+
+/* У правого края экрана подменю раскрывается влево, иначе уедет за окно */
+.menu[data-flip='true'] .menu__sub {
+  left: auto;
+  right: calc(100% - 1px);
+}
+
+/* ---------- Сведения о файле ---------- */
+
+.info {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 9;
+  min-width: 320px;
+  max-width: min(460px, calc(100% - 32px));
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: rgba(19, 19, 22, 0.96);
+  font-size: 12.5px;
+  line-height: 1.9;
+  color: var(--text-lo);
+  animation: info-in var(--dur-base) var(--ease);
+}
+
+.info__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.info__name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.info__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.info__value {
+  color: var(--text-hi);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.info__value--ok {
   color: #46c17a;
 }
 
-.diag__value--warn {
+.info__value--warn {
   color: #f0a742;
+}
+
+@keyframes info-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -46%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* ---------- Сообщения ---------- */
+
+/*
+ * Живёт сверху по центру, вне слоя хрома: сообщение об ошибке должно быть видно
+ * и тогда, когда панели спрятаны, и не должно перекрывать таймлайн.
+ */
+.notice {
+  position: absolute;
+  top: calc(var(--titlebar-height) + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(520px, calc(100% - 32px));
+  padding: 10px 8px 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(19, 19, 22, 0.96);
+  font-size: 12.5px;
+  color: var(--text-hi);
+  animation: notice-in var(--dur-base) var(--ease);
+}
+
+.notice[data-kind='error'] {
+  border-color: #5d2b2e;
+}
+
+.notice__text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notice__button {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  color: var(--text-hi);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.notice__button:hover {
+  background: #22222a;
+}
+
+.notice__close {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.notice__close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-hi);
+}
+
+@keyframes notice-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%);
+  }
 }

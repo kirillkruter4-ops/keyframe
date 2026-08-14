@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, type JSX, type MouseEvent as ReactMouseEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type JSX,
+  type MouseEvent as ReactMouseEvent
+} from 'react'
 import {
   usePlayer,
   useIdleChrome,
@@ -6,12 +13,21 @@ import {
   useWindowState,
   useScrub,
   useOsd,
+  useNotice,
   useUpdate,
   type PlayerState,
   type OsdMessage,
+  type Notice,
   type UpdateStatus
 } from './usePlayer'
+import { ContextMenu, Tracks, trackLabel, type MenuActions } from './ContextMenu'
 import logoUrl from './assets/logo.svg'
+
+/** Шаги скорости. Ниже 0.25 речь неразборчива, выше 3 — бессмысленна. */
+const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3]
+
+/** Такой файл перетащили как субтитры, а не как видео. */
+const SUBTITLE_EXTENSIONS = /\.(srt|ass|ssa|sub|vtt|sup|idx|lrc)$/i
 
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) seconds = 0
@@ -26,12 +42,20 @@ function formatTime(seconds: number): string {
 export function App(): JSX.Element {
   const player = usePlayer()
   const startDrag = useWindowDrag()
-  const { fullscreen, maximized } = useWindowState()
+  const { fullscreen, maximized, alwaysOnTop } = useWindowState()
   const [osd, showOsd] = useOsd()
+  const [notice, showNotice] = useNotice()
   const update = useUpdate()
+  const [tracksOpen, setTracksOpen] = useState(false)
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null)
+  const [infoOpen, setInfoOpen] = useState(false)
 
   const hasFile = player.filename !== null
-  const chromeVisible = useIdleChrome(2500, hasFile && !player.paused)
+  // Открытое меню — причина не прятать хром: под курсором пункты
+  const chromeVisible = useIdleChrome(
+    2500,
+    hasFile && !player.paused && !tracksOpen && menuAt === null && !infoOpen
+  )
 
   const mpv = window.keyframe.mpv
 
@@ -113,13 +137,122 @@ export function App(): JSX.Element {
     void window.keyframe.openFile()
   }, [])
 
+  /**
+   * Скорость двигается по фиксированным ступеням, а не умножением: так до
+   * привычного 1× всегда можно вернуться тем же числом нажатий, каким ушёл.
+   */
+  const changeSpeed = useCallback(
+    (direction: number) => {
+      const closest = SPEEDS.reduce((best, value, index) =>
+        Math.abs(value - player.speed) < Math.abs(SPEEDS[best] - player.speed) ? index : best, 0)
+      const next = SPEEDS[Math.min(SPEEDS.length - 1, Math.max(0, closest + direction))]
+
+      void mpv.set('speed', next)
+      showOsd({ label: `${next}×` })
+    },
+    [mpv, player.speed, showOsd]
+  )
+
+  const setSpeed = useCallback(
+    (value: number) => {
+      void mpv.set('speed', value)
+      showOsd({ label: `${value}×` })
+    },
+    [mpv, showOsd]
+  )
+
+  const resetSpeed = useCallback(() => setSpeed(1), [setSpeed])
+
+  const adjustSubDelay = useCallback(
+    (delta: number) => {
+      const next = Math.round((player.subDelay + delta) * 100) / 100
+      void mpv.set('sub-delay', next)
+      showOsd({ label: `Субтитры ${next > 0 ? '+' : ''}${next.toFixed(1).replace('.', ',')} с` })
+    },
+    [mpv, player.subDelay, showOsd]
+  )
+
+  /**
+   * Покадровая перемотка. mpv сам ставит паузу на первом же шаге — иначе
+   * следующий кадр немедленно сменился бы воспроизведением.
+   */
+  const frameStep = useCallback(
+    (direction: number) => {
+      void mpv.command(direction > 0 ? 'frame-step' : 'frame-back-step')
+      showOsd({ label: direction > 0 ? 'Кадр +1' : 'Кадр −1', icon: direction > 0 ? 'forward' : 'back' })
+    },
+    [mpv, showOsd]
+  )
+
+  const takeScreenshot = useCallback(async () => {
+    const target = await window.keyframe.mpv.screenshot()
+    if (!target) {
+      showNotice({ kind: 'error', text: 'Не удалось сохранить снимок кадра' })
+      return
+    }
+    showNotice({
+      kind: 'info',
+      text: 'Снимок сохранён в «Изображения\\Keyframe»',
+      action: { label: 'Показать', run: () => void window.keyframe.showItem(target) }
+    })
+  }, [showNotice])
+
+  const toggleSubtitles = useCallback(() => {
+    const next = !player.subVisible
+    void mpv.set('sub-visibility', next)
+    showOsd({ label: next ? 'Субтитры вкл' : 'Субтитры выкл' })
+  }, [mpv, player.subVisible, showOsd])
+
+  // Ошибку открытия файл сам не показывает: без сообщения экран просто
+  // останется чёрным, и причина будет непонятна
+  useEffect(
+    () =>
+      window.keyframe.mpv.onEvent((name, data) => {
+        if (name !== 'end-file' || data.reason !== 'error') return
+        const detail = typeof data.file_error === 'string' ? `: ${data.file_error}` : ''
+        showNotice({ kind: 'error', text: `Не удалось открыть файл${detail}` })
+      }),
+    [showNotice]
+  )
+
+  useEffect(
+    () => window.keyframe.mpv.onResumed((position) => showOsd({ label: `С ${formatTime(position)}` })),
+    [showOsd]
+  )
+
+  useEffect(() => {
+    if (!player.crashed) return
+    showNotice({
+      kind: 'error',
+      text: 'Движок воспроизведения упал',
+      action: { label: 'Перезапустить', run: () => void window.keyframe.mpv.restart() }
+    })
+  }, [player.crashed, showNotice])
+
   useEffect(() => {
     // Клавиши, которые имеют смысл при удержании: перемотка и громкость.
     // Остальные срабатывают один раз на нажатие.
-    const repeatable = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'KeyJ', 'KeyL'])
+    const repeatable = new Set([
+      'ArrowLeft',
+      'ArrowRight',
+      'ArrowUp',
+      'ArrowDown',
+      'KeyJ',
+      'KeyL',
+      // Покадровую перемотку держат зажатой, чтобы доехать до нужного места
+      'Period',
+      'Comma',
+      'KeyG',
+      'KeyH'
+    ])
+
+    // Без файла играть нечем: mpv на seek и paused отвечает ошибкой, а не
+    // молчанием. Пропускаем только то, что осмысленно на пустом экране
+    const alwaysAllowed = new Set(['KeyO', 'KeyF', 'Escape'])
 
     const onKey = (event: KeyboardEvent): void => {
       if (event.repeat && !repeatable.has(event.code)) return
+      if (!hasFile && !alwaysAllowed.has(event.code)) return
 
       switch (event.code) {
         case 'Space':
@@ -149,8 +282,47 @@ export function App(): JSX.Element {
           toggleMute()
           break
         case 'KeyF':
-        case 'Escape':
           toggleFullscreen()
+          break
+        // Escape только закрывает, и по одному за нажатие: меню, панель,
+        // сведения, полный экран. Разворачивать им окно нельзя — от Escape
+        // ждут ровно обратного
+        case 'Escape':
+          if (menuAt) setMenuAt(null)
+          else if (infoOpen) setInfoOpen(false)
+          else if (tracksOpen) setTracksOpen(false)
+          else if (fullscreen) toggleFullscreen()
+          break
+        case 'BracketRight':
+          changeSpeed(1)
+          break
+        case 'BracketLeft':
+          changeSpeed(-1)
+          break
+        case 'Backspace':
+          resetSpeed()
+          break
+        case 'Period':
+          frameStep(1)
+          break
+        case 'Comma':
+          frameStep(-1)
+          break
+        case 'KeyS':
+          void takeScreenshot()
+          break
+        case 'KeyV':
+          toggleSubtitles()
+          break
+        // Рассинхрон субтитров правят на слух, подряд по несколько нажатий
+        case 'KeyG':
+          adjustSubDelay(-0.1)
+          break
+        case 'KeyH':
+          adjustSubDelay(0.1)
+          break
+        case 'KeyI':
+          setInfoOpen((open) => !open)
           break
         case 'KeyO':
           if (event.ctrlKey) openFile()
@@ -160,7 +332,25 @@ export function App(): JSX.Element {
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [togglePause, seekBy, openFile, toggleFullscreen, adjustVolume, toggleMute])
+  }, [
+    togglePause,
+    seekBy,
+    openFile,
+    toggleFullscreen,
+    adjustVolume,
+    toggleMute,
+    changeSpeed,
+    resetSpeed,
+    frameStep,
+    takeScreenshot,
+    toggleSubtitles,
+    adjustSubDelay,
+    tracksOpen,
+    menuAt,
+    infoOpen,
+    fullscreen,
+    hasFile
+  ])
 
   /**
    * Клик по видео. Слой хрома не принимает мышь, поэтому сюда попадают только
@@ -168,6 +358,16 @@ export function App(): JSX.Element {
    * где внутри лежит кнопка.
    */
   const onSurfaceClick = (event: ReactMouseEvent<HTMLDivElement>): void => {
+    // Клик по видео мимо меню его закрывает, но не делает ничего сверх этого:
+    // иначе выход из меню попутно ставил бы фильм на паузу. Проверка target
+    // тут не годится — закрывать нужно и при клике по кнопке на панели
+    if (menuAt || tracksOpen || infoOpen) {
+      setMenuAt(null)
+      setTracksOpen(false)
+      setInfoOpen(false)
+      return
+    }
+
     if (event.target !== event.currentTarget) return
     if (hasFile) togglePause()
   }
@@ -177,16 +377,51 @@ export function App(): JSX.Element {
     if (hasFile) toggleFullscreen()
   }
 
+  /** Правая кнопка открывает меню там, где нажали, и заменяет уже открытое. */
+  const onContextMenu = (event: ReactMouseEvent<HTMLDivElement>): void => {
+    event.preventDefault()
+    setTracksOpen(false)
+    setMenuAt({ x: event.clientX, y: event.clientY })
+  }
+
   const onWheel = (event: React.WheelEvent<HTMLDivElement>): void => {
+    // Крутить громкость нечему, пока ничего не открыто: mpv её примет, но
+    // подсказка обещала бы изменение там, где менять нечего
+    if (!hasFile) return
     adjustVolume(event.deltaY < 0 ? 5 : -5)
   }
 
+  /**
+   * Перетаскивание. Файл субтитров подключается к тому, что уже играет, —
+   * подменять им видео было бы явно не тем, чего от жеста ждут.
+   */
   const onDrop = (event: React.DragEvent<HTMLDivElement>): void => {
     event.preventDefault()
     const file = event.dataTransfer.files[0]
     if (!file) return
+
     const filePath = window.keyframe.getPathForFile(file)
-    if (filePath) void mpv.command('loadfile', filePath, 'replace')
+    if (!filePath) return
+
+    if (SUBTITLE_EXTENSIONS.test(filePath) && hasFile) {
+      void mpv.command('sub-add', filePath, 'select')
+      showOsd({ label: 'Субтитры добавлены' })
+      return
+    }
+
+    void mpv.command('loadfile', filePath, 'replace')
+  }
+
+  const menuActions: MenuActions = {
+    togglePause,
+    seekBy,
+    frameStep,
+    setSpeed,
+    toggleMute,
+    toggleFullscreen,
+    screenshot: () => void takeScreenshot(),
+    openFile,
+    showInfo: () => setInfoOpen(true)
   }
 
   // Пока таймлайн тащат, показываем позицию под пальцем, а не отстающую от mpv
@@ -213,12 +448,27 @@ export function App(): JSX.Element {
       data-idle={!chromeVisible}
       onClick={onSurfaceClick}
       onDoubleClick={onSurfaceDoubleClick}
+      onContextMenu={onContextMenu}
       onWheel={onWheel}
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDrop}
     >
       {osd && <Osd message={osd} />}
+      {notice && <NoticeBar notice={notice} onClose={() => showNotice(null)} />}
       <UpdateBanner status={update} />
+
+      {menuAt && (
+        <ContextMenu
+          player={player}
+          position={menuAt}
+          alwaysOnTop={alwaysOnTop}
+          fullscreen={fullscreen}
+          onClose={() => setMenuAt(null)}
+          actions={menuActions}
+        />
+      )}
+
+      {infoOpen && <FileInfo player={player} onClose={() => setInfoOpen(false)} />}
 
       <div className="chrome-layer" data-hidden={!chromeVisible}>
         <div className="titlebar" onMouseDown={startDrag} onDoubleClick={() => void window.keyframe.window.toggleMaximize()}>
@@ -261,8 +511,6 @@ export function App(): JSX.Element {
             </button>
           </div>
         </div>
-
-        <Diagnostics player={player} />
 
         {hasFile && (
           <div className="chrome">
@@ -351,7 +599,39 @@ export function App(): JSX.Element {
                 <span> / {formatTime(player.duration)}</span>
               </div>
 
+              {player.speed !== 1 && (
+                <button
+                  className="control control--text tnum"
+                  onClick={resetSpeed}
+                  aria-label="Вернуть обычную скорость"
+                  title="Обычная скорость"
+                >
+                  {player.speed}×
+                </button>
+              )}
+
               <div className="spacer" />
+
+              <Tracks
+                tracks={player.tracks}
+                sid={player.sid}
+                aid={player.aid}
+                subVisible={player.subVisible}
+                open={tracksOpen}
+                onToggle={() => setTracksOpen((v) => !v)}
+              />
+
+              <button
+                className="control"
+                onClick={() => void takeScreenshot()}
+                aria-label="Снимок кадра"
+                title="Снимок кадра (S)"
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
+                  <path d="M1.5 4.5h3l1-2h5l1 2h3v8h-13z" strokeLinejoin="round" />
+                  <circle cx="8" cy="8.5" r="2.6" />
+                </svg>
+              </button>
 
               <button className="control" onClick={openFile} aria-label="Открыть файл">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
@@ -394,6 +674,100 @@ export function App(): JSX.Element {
           </button>
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * Сведения о файле.
+ *
+ * Это то, что осталось от отладочной панели, но по запросу: разрешение и
+ * декодер нужны ровно в тот момент, когда что-то тормозит, — а не поверх
+ * каждого фильма постоянно.
+ */
+function FileInfo({ player, onClose }: { player: PlayerState; onClose: () => void }): JSX.Element {
+  const audio = player.tracks.filter((track) => track.type === 'audio')
+  const subs = player.tracks.filter((track) => track.type === 'sub')
+  const activeAudio = audio.find((track) => track.id === player.aid)
+  const hwOk = player.hwdec !== null && player.hwdec !== 'no'
+
+  return (
+    <div className="info" onClick={(event) => event.stopPropagation()}>
+      <div className="info__head">
+        <span className="info__name" title={player.path ?? undefined}>
+          {player.filename ?? 'Ничего не открыто'}
+        </span>
+        <button className="notice__close" onClick={onClose} aria-label="Закрыть">
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1.2" />
+          </svg>
+        </button>
+      </div>
+
+      <Row label="Длительность" value={formatTime(player.duration)} />
+      <Row
+        label="Разрешение"
+        value={player.videoWidth ? `${player.videoWidth}×${player.videoHeight}` : '—'}
+      />
+      <Row label="Частота кадров" value={player.fps ? `${player.fps.toFixed(1)} к/с` : '—'} />
+      <Row label="Декодер" value={player.hwdec ?? '—'} tone={hwOk ? 'ok' : 'warn'} />
+      <Row
+        label="Пропущено кадров"
+        value={String(player.frameDrops)}
+        tone={player.frameDrops > 0 ? 'warn' : 'ok'}
+      />
+      <Row
+        label="Звук"
+        value={activeAudio ? trackLabel(activeAudio, audio.indexOf(activeAudio)) : '—'}
+      />
+      <Row label="Дорожек субтитров" value={String(subs.length)} />
+    </div>
+  )
+}
+
+function Row({
+  label,
+  value,
+  tone
+}: {
+  label: string
+  value: string
+  tone?: 'ok' | 'warn'
+}): JSX.Element {
+  return (
+    <div className="info__row">
+      <span>{label}</span>
+      <span className={`info__value tnum${tone ? ` info__value--${tone}` : ''}`}>{value}</span>
+    </div>
+  )
+}
+
+/**
+ * Сообщение об ошибке или о завершённом действии.
+ *
+ * В отличие от подсказки по центру, это сообщение ждёт: ошибку нужно прочитать,
+ * а иногда и ответить на неё кнопкой. Само гаснет только то, что не про ошибку.
+ */
+function NoticeBar({ notice, onClose }: { notice: Notice; onClose: () => void }): JSX.Element {
+  return (
+    <div className="notice" data-kind={notice.kind} key={notice.id}>
+      <span className="notice__text">{notice.text}</span>
+      {notice.action && (
+        <button
+          className="notice__button"
+          onClick={() => {
+            notice.action!.run()
+            onClose()
+          }}
+        >
+          {notice.action.label}
+        </button>
+      )}
+      <button className="notice__close" onClick={onClose} aria-label="Закрыть">
+        <svg width="10" height="10" viewBox="0 0 10 10">
+          <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1.2" />
+        </svg>
+      </button>
     </div>
   )
 }
@@ -501,45 +875,4 @@ function OsdIcon({ icon }: { icon: NonNullable<OsdMessage['icon']> }): JSX.Eleme
         </svg>
       )
   }
-}
-
-/**
- * Панель существует только ради спайка: она отвечает на вопросы,
- * ради которых спайк и затевался. Перед v0.1 её нужно убрать.
- */
-function Diagnostics({ player }: { player: PlayerState }): JSX.Element {
-  const hwOk = player.hwdec !== null && player.hwdec !== 'no'
-
-  return (
-    <div className="diag">
-      <div className="diag__row">
-        <span>Движок</span>
-        <span className={`diag__value ${player.crashed ? 'diag__value--warn' : 'diag__value--ok'}`}>
-          {player.crashed ? 'упал' : player.ready ? 'готов' : 'запуск…'}
-        </span>
-      </div>
-      <div className="diag__row">
-        <span>Разрешение</span>
-        <span className="diag__value tnum">
-          {player.videoWidth ? `${player.videoWidth}×${player.videoHeight}` : '—'}
-        </span>
-      </div>
-      <div className="diag__row">
-        <span>Декодер</span>
-        <span className={`diag__value ${hwOk ? 'diag__value--ok' : 'diag__value--warn'}`}>
-          {player.hwdec ?? '—'}
-        </span>
-      </div>
-      <div className="diag__row">
-        <span>FPS</span>
-        <span className="diag__value tnum">{player.fps ? player.fps.toFixed(1) : '—'}</span>
-      </div>
-      <div className="diag__row">
-        <span>Пропущено кадров</span>
-        <span className={`diag__value tnum ${player.frameDrops > 0 ? 'diag__value--warn' : 'diag__value--ok'}`}>
-          {player.frameDrops}
-        </span>
-      </div>
-    </div>
-  )
 }

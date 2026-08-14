@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+/** Запись из track-list mpv; нужные нам поля. */
+export interface Track {
+  id: number
+  type: 'video' | 'audio' | 'sub' | string
+  title?: string
+  lang?: string
+  external?: boolean
+  codec?: string
+  'demux-channel-count'?: number
+}
+
 export interface PlayerState {
   ready: boolean
   paused: boolean
@@ -8,6 +19,8 @@ export interface PlayerState {
   volume: number
   muted: boolean
   filename: string | null
+  /** Полный путь: нужен, чтобы показать файл в проводнике */
+  path: string | null
   coreIdle: boolean
   cacheDuration: number
   videoWidth: number | null
@@ -16,6 +29,18 @@ export interface PlayerState {
   frameDrops: number
   fps: number | null
   crashed: boolean
+  speed: number
+  tracks: Track[]
+  /** id выбранной дорожки; false — выключена */
+  sid: number | false
+  aid: number | false
+  subVisible: boolean
+  /** Секунды: положительная — субтитры показываются позже звука */
+  subDelay: number
+  audioDelay: number
+  loop: boolean
+  /** Пропорции кадра: -1 — как в файле */
+  aspect: number
 }
 
 const INITIAL: PlayerState = {
@@ -26,6 +51,7 @@ const INITIAL: PlayerState = {
   volume: 100,
   muted: false,
   filename: null,
+  path: null,
   coreIdle: true,
   cacheDuration: 0,
   videoWidth: null,
@@ -33,7 +59,21 @@ const INITIAL: PlayerState = {
   hwdec: null,
   frameDrops: 0,
   fps: null,
-  crashed: false
+  crashed: false,
+  speed: 1,
+  tracks: [],
+  sid: false,
+  aid: false,
+  subVisible: true,
+  subDelay: 0,
+  audioDelay: 0,
+  loop: false,
+  aspect: -1
+}
+
+/** mpv отдаёт «дорожка не выбрана» как false, выбранную — как число. */
+function trackId(value: unknown): number | false {
+  return typeof value === 'number' ? value : false
 }
 
 /** mpv отдаёт числовые свойства как null, пока файл не загружен. */
@@ -62,6 +102,8 @@ export function usePlayer(): PlayerState {
             return { ...prev, muted: Boolean(value) }
           case 'filename':
             return { ...prev, filename: typeof value === 'string' ? value : null }
+          case 'path':
+            return { ...prev, path: typeof value === 'string' ? value : null }
           case 'core-idle':
             return { ...prev, coreIdle: Boolean(value) }
           case 'demuxer-cache-duration':
@@ -76,20 +118,58 @@ export function usePlayer(): PlayerState {
             return { ...prev, frameDrops: num(value) }
           case 'estimated-vf-fps':
             return { ...prev, fps: typeof value === 'number' ? value : null }
+          case 'speed':
+            return { ...prev, speed: num(value, 1) }
+          case 'track-list':
+            return { ...prev, tracks: Array.isArray(value) ? (value as Track[]) : [] }
+          case 'sid':
+            return { ...prev, sid: trackId(value) }
+          case 'aid':
+            return { ...prev, aid: trackId(value) }
+          case 'sub-visibility':
+            return { ...prev, subVisible: Boolean(value) }
+          case 'sub-delay':
+            return { ...prev, subDelay: num(value) }
+          case 'audio-delay':
+            return { ...prev, audioDelay: num(value) }
+          // loop-file — это false или 'inf'/число повторов, а не булево
+          case 'loop-file':
+            return { ...prev, loop: value !== false && value !== 'no' }
+          case 'video-aspect-override':
+            return { ...prev, aspect: num(value, -1) }
           default:
             return prev
         }
       })
     }
 
+    /**
+     * Свойства, которые mpv прислал до того, как интерфейс успел подписаться.
+     *
+     * Без этого запроса состояние осталось бы начальным до первого изменения
+     * каждого свойства. А не меняется как раз то, что уже стоит правильно:
+     * mpv не паузе с самого запуска, `pause` остаётся false и молчит, — и
+     * кнопка предлагала бы продолжить уже идущее видео.
+     */
+    const pullSnapshot = (): void => {
+      void api.state().then((snapshot) => {
+        for (const [name, value] of Object.entries(snapshot)) applyProperty(name, value)
+      })
+    }
+
     const offProperty = api.onProperty(applyProperty)
-    const offReady = api.onReady(() => setState((p) => ({ ...p, ready: true })))
+
+    // Готовность приходит и после перезапуска упавшего движка: прошлое
+    // состояние там от мёртвого процесса, и его нужно забыть целиком —
+    // а верное взять у нового
+    const offReady = api.onReady(() => {
+      setState({ ...INITIAL, ready: true })
+      pullSnapshot()
+    })
+
     const offExit = api.onExit(() => setState((p) => ({ ...p, crashed: true, ready: false })))
 
-    // Состояние могло прийти до того, как интерфейс успел подписаться
-    void api.state().then((snapshot) => {
-      for (const [name, value] of Object.entries(snapshot)) applyProperty(name, value)
-    })
+    pullSnapshot()
 
     return () => {
       offProperty()
@@ -135,14 +215,52 @@ export function useOsd(): [OsdMessage | null, (message: Omit<OsdMessage, 'id'>) 
   return [message, show]
 }
 
+export interface Notice {
+  id: number
+  kind: 'error' | 'info'
+  text: string
+  action?: { label: string; run: () => void }
+}
+
+/**
+ * Сообщение, которое нельзя показать вспышкой по центру: об ошибке нужно
+ * успеть прочитать, а иногда и нажать кнопку.
+ *
+ * Ошибки висят, пока их не закроют: файл не открылся — это не мелочь, о которой
+ * можно забыть через секунду. Всё остальное гаснет само.
+ */
+export function useNotice(): [Notice | null, (next: Omit<Notice, 'id'> | null) => void] {
+  const [notice, setNotice] = useState<Notice | null>(null)
+  const nextId = useRef(1)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const show = useCallback((next: Omit<Notice, 'id'> | null): void => {
+    if (timer.current) clearTimeout(timer.current)
+
+    if (!next) {
+      setNotice(null)
+      return
+    }
+
+    setNotice({ ...next, id: nextId.current++ })
+    if (next.kind === 'info') timer.current = setTimeout(() => setNotice(null), 4500)
+  }, [])
+
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current)
+  }, [])
+
+  return [notice, show]
+}
+
 /**
  * Состояние окна приходит только из главного процесса и никогда не угадывается
  * интерфейсом: развернуть окно или выйти из полного экрана можно и мимо наших
  * кнопок, а расходящееся состояние даёт кнопку, которая делает не то, что
  * нарисовано на её иконке.
  */
-export function useWindowState(): { fullscreen: boolean; maximized: boolean } {
-  const [state, setState] = useState({ fullscreen: false, maximized: false })
+export function useWindowState(): { fullscreen: boolean; maximized: boolean; alwaysOnTop: boolean } {
+  const [state, setState] = useState({ fullscreen: false, maximized: false, alwaysOnTop: false })
 
   useEffect(() => {
     void window.keyframe.window.state().then(setState)
