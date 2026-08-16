@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { Settings } from '../shared/settings'
+import type { Encoder, ExportProgress, ExportRequest } from '../shared/edit/export'
 
 export type { Settings }
 
@@ -121,6 +122,48 @@ const api = {
   },
 
   openSubtitle: () => ipcRenderer.invoke('dialog:openSubtitle') as Promise<string | null>,
+
+  /** Встроенный редактор нарезки. Всё здесь работает с исходным файлом по пути. */
+  editor: {
+    /** Сообщить главному процессу, что плеер показывает склейку, а не файл. */
+    setActive: (active: boolean) => ipcRenderer.invoke('editor:active', active),
+
+    /** Выйти из редактора: вернуть исходный файл и встать на указанную секунду. */
+    leave: (source: string, seconds: number) =>
+      ipcRenderer.invoke('editor:leave', source, seconds),
+
+    loadProject: (source: string, duration: number) =>
+      ipcRenderer.invoke('editor:project:load', source, duration) as Promise<
+        { in: number; out: number }[] | null
+      >,
+    saveProject: (source: string, segments: { in: number; out: number }[], duration: number) =>
+      ipcRenderer.invoke('editor:project:save', source, segments, duration),
+
+    /** Кадр полосы: точная секунда исходника, запрос дожидается очереди. */
+    thumb: (source: string, seconds: number) =>
+      ipcRenderer.invoke('editor:thumb', source, seconds) as Promise<string | null>,
+
+    /** Куда на самом деле придётся рез при быстром экспорте. */
+    keyframe: (source: string, seconds: number) =>
+      ipcRenderer.invoke('editor:keyframe', source, seconds) as Promise<number | null>,
+
+    encoders: () => ipcRenderer.invoke('editor:encoders') as Promise<Encoder[]>,
+
+    chooseTarget: (suggested: string) =>
+      ipcRenderer.invoke('editor:chooseTarget', suggested) as Promise<string | null>,
+
+    start: (request: ExportRequest) => ipcRenderer.invoke('editor:export', request),
+    cancel: () => ipcRenderer.invoke('editor:cancel'),
+    reveal: (target: string) => ipcRenderer.invoke('editor:reveal', target),
+
+    onProgress: (cb: (progress: ExportProgress) => void): (() => void) => {
+      const handler = (_e: unknown, progress: ExportProgress) => cb(progress)
+      ipcRenderer.on('editor:progress', handler)
+      return () => {
+        ipcRenderer.off('editor:progress', handler)
+      }
+    }
+  },
 
   /** Показать сохранённый снимок в проводнике. */
   showItem: (target: string) => ipcRenderer.invoke('shell:showItem', target),

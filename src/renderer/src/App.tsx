@@ -25,6 +25,7 @@ import { ContextMenu, Tracks, trackLabel, type MenuActions } from './ContextMenu
 import { PlaylistPanel, SettingsPanel } from './Settings'
 import { Timecode, Timeline } from './Timeline'
 import { justDragged, useDragPanel } from './useDragPanel'
+import { Editor } from './editor/Editor'
 import { formatTime } from './format'
 import logoUrl from './assets/logo.svg'
 
@@ -48,15 +49,27 @@ export function App(): JSX.Element {
   /** Что открыто поверх видео: разом показываем только одно. */
   const [panel, setPanel] = useState<'info' | 'settings' | 'playlist' | null>(null)
 
+  /**
+   * Открытый редактор. Хранится файлом и секундой, а не флагом: пока он открыт,
+   * плеер показывает склейку `edl://`, и `player.path` указывает уже на неё —
+   * узнать по нему, что мы режем, будет нельзя.
+   */
+  const [editing, setEditing] = useState<{
+    source: string
+    duration: number
+    startAt: number
+  } | null>(null)
+
   // Ссылка постоянная намеренно: панели не перерисовываются вместе с позицией
   // воспроизведения только пока все их свойства остаются теми же самыми
   const closePanel = useCallback(() => setPanel(null), [])
 
   const hasFile = player.filename !== null
-  // Открытое меню или панель — причина не прятать хром: под курсором органы
+  // Открытое меню или панель — причина не прятать хром: под курсором органы.
+  // Редактор — тем более: дорожка, которая гаснет посреди резки, невыносима
   const chromeVisible = useIdleChrome(
     2500,
-    hasFile && !player.paused && !tracksOpen && menuAt === null && panel === null
+    hasFile && !player.paused && !tracksOpen && menuAt === null && panel === null && !editing
   )
 
   const mpv = window.keyframe.mpv
@@ -129,6 +142,45 @@ export function App(): JSX.Element {
   const openFile = useCallback(() => {
     void window.keyframe.openFile()
   }, [])
+
+  /**
+   * Войти в редактор.
+   *
+   * Секунду берём снимком состояния, а не из React: позиция воспроизведения
+   * туда намеренно не попадает — она меняется с частотой кадров. Редактор
+   * должен открыться на том кадре, который зритель видит перед собой.
+   */
+  const openEditor = useCallback(async () => {
+    if (!player.path || player.duration <= 0) return
+
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(player.path)) {
+      showNotice({ kind: 'error', text: 'Резать можно только файлы на диске, не потоки' })
+      return
+    }
+
+    const snapshot = await mpv.state()
+    const position = Number(snapshot['time-pos'])
+
+    setPanel(null)
+    setTracksOpen(false)
+    setMenuAt(null)
+    setEditing({
+      source: player.path,
+      duration: player.duration,
+      startAt: Number.isFinite(position) ? position : 0
+    })
+  }, [mpv, player.path, player.duration, showNotice])
+
+  // Открыли другой файл, пока висел редактор: резать уже нечего. Склейку
+  // (edl://) за смену файла не считаем — это и есть то, что мы сами загрузили
+  useEffect(() => {
+    if (!editing || !player.path) return
+    if (player.path === editing.source) return
+    if (player.path.startsWith('edl://')) return
+
+    setEditing(null)
+    void window.keyframe.editor.setActive(false)
+  }, [editing, player.path])
 
   /**
    * Скорость двигается по фиксированным ступеням, а не умножением: так до
@@ -247,6 +299,11 @@ export function App(): JSX.Element {
       if (event.repeat && !repeatable.has(event.code)) return
       if (!hasFile && !alwaysAllowed.has(event.code)) return
 
+      // В редакторе своя раскладка целиком: S там режет, а не снимает кадр,
+      // I ставит метку, а не показывает сведения. Двух обработчиков на одну
+      // клавишу быть не должно — редактор ставит свой и отвечает за всё
+      if (editing) return
+
       switch (event.code) {
         case 'Space':
         case 'KeyK':
@@ -327,6 +384,9 @@ export function App(): JSX.Element {
         case 'KeyO':
           if (event.ctrlKey) openFile()
           break
+        case 'KeyE':
+          void openEditor()
+          break
       }
     }
 
@@ -351,7 +411,9 @@ export function App(): JSX.Element {
     fullscreen,
     hasFile,
     mpv,
-    settings.seekStep
+    settings.seekStep,
+    editing,
+    openEditor
   ])
 
   /**
@@ -386,6 +448,8 @@ export function App(): JSX.Element {
   /** Правая кнопка открывает меню там, где нажали, и заменяет уже открытое. */
   const onContextMenu = (event: ReactMouseEvent<HTMLDivElement>): void => {
     event.preventDefault()
+    // В редакторе меню плеера предлагало бы снимки и дорожки — не к месту
+    if ((event.target as HTMLElement).closest('.editor')) return
     setTracksOpen(false)
     setMenuAt({ x: event.clientX, y: event.clientY })
   }
@@ -394,6 +458,8 @@ export function App(): JSX.Element {
     // Крутить громкость нечему, пока ничего не открыто: mpv её примет, но
     // подсказка обещала бы изменение там, где менять нечего
     if (!hasFile) return
+    // Над дорожкой редактора колесо принадлежит ей: там прокрутка и зум
+    if ((event.target as HTMLElement).closest('.editor')) return
     adjustVolume(event.deltaY < 0 ? 5 : -5)
   }
 
@@ -434,7 +500,8 @@ export function App(): JSX.Element {
     openFile,
     showInfo: () => setPanel('info'),
     showSettings: () => setPanel('settings'),
-    showPlaylist: () => setPanel('playlist')
+    showPlaylist: () => setPanel('playlist'),
+    openEditor: () => void openEditor()
   }
 
   const volumeLevel = player.muted ? 0 : volume.ratio !== null ? volume.ratio * 100 : player.volume
@@ -485,7 +552,14 @@ export function App(): JSX.Element {
 
       <div className="chrome-layer" data-hidden={!chromeVisible}>
         <div className="titlebar" onMouseDown={startDrag} onDoubleClick={() => void window.keyframe.window.toggleMaximize()}>
-          <div className="titlebar__title">{player.filename ?? 'Keyframe'}</div>
+          {/*
+            В редакторе mpv играет склейку, и его filename — это вся строка
+            edl:// с путём и таймкодами. В заголовке должно стоять имя фильма,
+            который режут
+          */}
+          <div className="titlebar__title">
+            {editing ? editing.source.split(/[\\/]/).pop() : (player.filename ?? 'Keyframe')}
+          </div>
           <div className="titlebar__buttons" onMouseDown={(e) => e.stopPropagation()}>
             <button
               className="titlebar__button"
@@ -525,7 +599,7 @@ export function App(): JSX.Element {
           </div>
         </div>
 
-        {hasFile && (
+        {hasFile && !editing && (
           <div className="chrome">
             <Timeline duration={player.duration} />
 
@@ -696,6 +770,17 @@ export function App(): JSX.Element {
           </div>
         )}
       </div>
+
+      {editing && (
+        <Editor
+          source={editing.source}
+          duration={editing.duration}
+          startAt={editing.startAt}
+          hasAudio={player.tracks.some((track) => track.type === 'audio')}
+          onClose={() => setEditing(null)}
+          onNotice={(text) => showNotice({ kind: 'info', text })}
+        />
+      )}
 
       {!hasFile && (
         <div className="empty">

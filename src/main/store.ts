@@ -22,11 +22,20 @@ interface ResumeEntry {
   at: number
 }
 
+/** Нарезка, привязанная к исходному файлу: открыл тот же фильм — она на месте. */
+interface ProjectEntry {
+  segments: { in: number; out: number }[]
+  /** Длительность исходника: по ней проверяем, тот ли это файл */
+  duration: number
+  at: number
+}
+
 interface Data {
   volume: number
   muted: boolean
   window: WindowBounds | null
   resume: Record<string, ResumeEntry>
+  projects: Record<string, ProjectEntry>
   settings: Settings
 }
 
@@ -35,6 +44,7 @@ const DEFAULTS: Data = {
   muted: false,
   window: null,
   resume: {},
+  projects: {},
   settings: DEFAULT_SETTINGS
 }
 
@@ -49,6 +59,9 @@ const RESUME_MIN_DURATION = 180
 /** У самого начала возвращать некуда, у конца — уже досмотрено. */
 const RESUME_MIN_POSITION = 30
 const RESUME_TAIL = 45
+
+/** Нарезок хранится меньше, чем позиций: их и делают реже. */
+const PROJECT_LIMIT = 50
 
 /**
  * Настройки и позиции просмотра в одном файле в userData.
@@ -75,6 +88,7 @@ export class Store {
         muted: Boolean(parsed.muted),
         window: parsed.window ?? null,
         resume: parsed.resume ?? {},
+        projects: parsed.projects ?? {},
         // Настройка, которой в файле ещё нет, берётся из умолчаний: так
         // новая версия читает файл старой без миграций
         settings: { ...DEFAULT_SETTINGS, ...(parsed.settings ?? {}) }
@@ -82,7 +96,7 @@ export class Store {
     } catch {
       // Файла нет или он испорчен — начинаем с чистого состояния,
       // это не повод мешать запуску
-      return { ...DEFAULTS, resume: {}, settings: { ...DEFAULT_SETTINGS } }
+      return { ...DEFAULTS, resume: {}, projects: {}, settings: { ...DEFAULT_SETTINGS } }
     }
   }
 
@@ -188,6 +202,50 @@ export class Store {
     if (Math.abs(entry.duration - duration) > 1) return null
     if (entry.position > duration - RESUME_TAIL) return null
     return entry.position
+  }
+
+  /**
+   * Нарезка сохраняется, даже если её не экспортировали: вернулся к тому же
+   * фильму — куски на месте. Исходник при этом не трогается никогда, так что
+   * терять тут нечего, а начинать заново — обидно.
+   */
+  saveProject(file: string, segments: { in: number; out: number }[], duration: number): void {
+    const key = Store.key(file)
+
+    // Целый нетронутый файл — это не нарезка, а её отсутствие: хранить нечего,
+    // а старую запись надо убрать, иначе «сбросить» не сбрасывает
+    const whole =
+      segments.length === 1 && segments[0].in <= 0.001 && segments[0].out >= duration - 0.001
+
+    if (whole || segments.length === 0) {
+      if (this.data.projects[key]) {
+        delete this.data.projects[key]
+        this.schedule()
+      }
+      return
+    }
+
+    this.data.projects[key] = { segments, duration, at: Date.now() }
+    this.pruneProjects()
+    this.schedule()
+  }
+
+  /** Длительность сверяем по той же причине, что и у позиции просмотра. */
+  projectFor(file: string, duration: number): { in: number; out: number }[] | null {
+    const entry = this.data.projects[Store.key(file)]
+    if (!entry) return null
+    if (Math.abs(entry.duration - duration) > 1) return null
+    return entry.segments
+  }
+
+  private pruneProjects(): void {
+    const keys = Object.keys(this.data.projects)
+    if (keys.length <= PROJECT_LIMIT) return
+
+    keys
+      .sort((a, b) => this.data.projects[a].at - this.data.projects[b].at)
+      .slice(0, keys.length - PROJECT_LIMIT)
+      .forEach((key) => delete this.data.projects[key])
   }
 
   private prune(): void {

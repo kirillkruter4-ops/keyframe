@@ -143,6 +143,7 @@ export interface MenuActions {
   showInfo: () => void
   showSettings: () => void
   showPlaylist: () => void
+  openEditor: () => void
 }
 
 /**
@@ -383,6 +384,7 @@ export function ContextMenu({
       {hasFile && (
         <>
           <Separator />
+          <Item label="Нарезать видео…" hint="E" onClick={run(actions.openEditor)} />
           <Item label="Снимок кадра" hint="S" onClick={run(actions.screenshot)} />
           <Item
             label="Показать в проводнике"

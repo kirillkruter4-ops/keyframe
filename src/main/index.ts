@@ -17,6 +17,7 @@ import { setupUpdater } from './updater'
 import { Store, DEFAULT_SETTINGS, type Settings } from './store'
 import { appendPaths, isMediaFile, isPlaylistFile, openPath } from './playlist'
 import { Thumbnailer } from './thumbnailer'
+import { setupEditor } from './editor'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
@@ -431,7 +432,21 @@ function updateTaskbarProgress(): void {
 let currentFile: string | null = null
 let lastSavedAt = 0
 
+/**
+ * Пока открыт редактор, плеер показывает не файл, а склейку `edl://`.
+ *
+ * Позиция в ней — монтажная, к исходнику отношения не имеет, и запоминать её
+ * как «место, где остановились» нельзя: вернувшись к фильму, зритель уехал бы
+ * непонятно куда. Возврат к сохранённой позиции в редакторе тоже не нужен —
+ * туда, куда надо, редактор попадает сам.
+ */
+let editorActive = false
+
+/** Сколько ближайших загрузок не должны прыгать к сохранённой позиции. */
+let skipResume = 0
+
 function savePosition(): void {
+  if (editorActive) return
   if (!currentFile || !mpv) return
   const position = Number(mpv.state['time-pos'])
   const duration = Number(mpv.state.duration)
@@ -446,6 +461,11 @@ function savePosition(): void {
  * этому моменту уже знает длительность, и переход не виден как рывок.
  */
 async function resumeIfNeeded(): Promise<void> {
+  if (editorActive) return
+  if (skipResume > 0) {
+    skipResume -= 1
+    return
+  }
   if (!mpv || !settings().resumePlayback) return
 
   // Путь обычно приходит наблюдателем раньше события загрузки, но полагаться
@@ -621,6 +641,51 @@ ipcMain.handle('mpv:screenshot', async () => {
 })
 
 ipcMain.handle('shell:showItem', (_e, target: string) => shell.showItemInFolder(target))
+
+// ---------- Редактор ----------
+
+ipcMain.handle('editor:active', (_e, active: boolean) => {
+  editorActive = active
+})
+
+/**
+ * Выход из редактора: вернуть исходный файл на ту секунду, где стоял плейхед.
+ *
+ * Загрузку делает главный процесс, а не интерфейс, потому что вместе с ней
+ * надо погасить возврат к сохранённой позиции: она относится к этому же файлу,
+ * и без этого фильм прыгнул бы туда, где его бросили в прошлый раз, вместо
+ * того места, откуда только что вышли из редактора.
+ */
+ipcMain.handle('editor:leave', async (_e, source: string, seconds: number) => {
+  skipResume += 1
+  editorActive = false
+  await mpv?.command('loadfile', source, 'replace', -1, `start=${seconds}`).catch(() => undefined)
+})
+
+setupEditor({
+  store: () => store,
+  thumbnailer: () => {
+    if (!thumbnailer) thumbnailer = new Thumbnailer(mpvExecutablePath())
+    return thumbnailer
+  },
+  overlay: () => overlayWindow,
+  bundledFfmpeg: resourcePath('mpv', 'ffmpeg.exe'),
+
+  // stop, а не пауза: пока файл открыт на чтение, Windows не даст его
+  // переименовать. Кадры для полосы держит второй mpv — его тоже отпускаем
+  release: async () => {
+    thumbnailer?.stop()
+    await mpv?.command('stop').catch(() => undefined)
+    // Файл закрывается не в тот же миг, когда команда принята
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  },
+
+  reopen: async (file: string) => {
+    skipResume += 1
+    currentFile = file
+    await mpv?.loadFile(file).catch(() => undefined)
+  }
+})
 
 // ---------- Превью кадра на таймлайне ----------
 
