@@ -14,6 +14,8 @@ import {
   useScrub,
   useOsd,
   useNotice,
+  usePreview,
+  useSettings,
   useUpdate,
   type PlayerState,
   type OsdMessage,
@@ -21,10 +23,16 @@ import {
   type UpdateStatus
 } from './usePlayer'
 import { ContextMenu, Tracks, trackLabel, type MenuActions } from './ContextMenu'
+import { PlaylistPanel, SettingsPanel } from './Settings'
+import { justDragged, useDragPanel } from './useDragPanel'
 import logoUrl from './assets/logo.svg'
 
 /** Шаги скорости. Ниже 0.25 речь неразборчива, выше 3 — бессмысленна. */
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3]
+
+/** Ширина превью кадра и боковой отступ панели — те же числа, что в styles.css. */
+const PREVIEW_WIDTH = 170
+const CHROME_PADDING = 16
 
 /** Такой файл перетащили как субтитры, а не как видео. */
 const SUBTITLE_EXTENSIONS = /\.(srt|ass|ssa|sub|vtt|sup|idx|lrc)$/i
@@ -48,13 +56,16 @@ export function App(): JSX.Element {
   const update = useUpdate()
   const [tracksOpen, setTracksOpen] = useState(false)
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null)
-  const [infoOpen, setInfoOpen] = useState(false)
+  const [settings, updateSettings] = useSettings()
+
+  /** Что открыто поверх видео: разом показываем только одно. */
+  const [panel, setPanel] = useState<'info' | 'settings' | 'playlist' | null>(null)
 
   const hasFile = player.filename !== null
-  // Открытое меню — причина не прятать хром: под курсором пункты
+  // Открытое меню или панель — причина не прятать хром: под курсором органы
   const chromeVisible = useIdleChrome(
     2500,
-    hasFile && !player.paused && !tracksOpen && menuAt === null && !infoOpen
+    hasFile && !player.paused && !tracksOpen && menuAt === null && panel === null
   )
 
   const mpv = window.keyframe.mpv
@@ -67,6 +78,34 @@ export function App(): JSX.Element {
     if (player.duration <= 0) return
     void mpv.command('seek', ratio * player.duration, done ? 'absolute' : 'absolute+keyframes')
   })
+
+  const [preview, showPreview, hidePreview] = usePreview(player.duration)
+
+  /**
+   * Подсказка следует за курсором по дорожке — и во время протяжки тоже:
+   * оторвать её от пальца значило бы перематывать вслепую как раз тогда,
+   * когда точность нужна больше всего.
+   */
+  const onTimelineHover = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const track = timeline.ref.current
+    if (!track || player.duration <= 0) return
+
+    const box = track.getBoundingClientRect()
+    if (box.width === 0) return
+
+    const ratio = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width))
+
+    /*
+     * Подсказка центрируется по курсору, поэтому у краёв дорожки её надо
+     * придержать: половина ширины кадра плюс отступ панели — ровно то, что
+     * ещё помещается в окно. Время при этом остаётся честным, смещается
+     * только сама картинка.
+     */
+    const overhang = PREVIEW_WIDTH / 2 - CHROME_PADDING
+    const x = Math.min(Math.max(ratio * box.width, overhang), box.width - overhang)
+
+    showPreview(ratio * player.duration, x)
+  }
 
   const volume = useScrub((ratio) => {
     void mpv.set('volume', Math.round(ratio * 100))
@@ -261,16 +300,16 @@ export function App(): JSX.Element {
           togglePause()
           break
         case 'ArrowRight':
-          seekBy(5)
+          seekBy(settings.seekStep)
           break
         case 'ArrowLeft':
-          seekBy(-5)
+          seekBy(-settings.seekStep)
           break
         case 'KeyL':
-          seekBy(10)
+          seekBy(settings.seekStep * 2)
           break
         case 'KeyJ':
-          seekBy(-10)
+          seekBy(-settings.seekStep * 2)
           break
         case 'ArrowUp':
           adjustVolume(5)
@@ -289,7 +328,7 @@ export function App(): JSX.Element {
         // ждут ровно обратного
         case 'Escape':
           if (menuAt) setMenuAt(null)
-          else if (infoOpen) setInfoOpen(false)
+          else if (panel) setPanel(null)
           else if (tracksOpen) setTracksOpen(false)
           else if (fullscreen) toggleFullscreen()
           break
@@ -322,7 +361,14 @@ export function App(): JSX.Element {
           adjustSubDelay(0.1)
           break
         case 'KeyI':
-          setInfoOpen((open) => !open)
+          setPanel((open) => (open === 'info' ? null : 'info'))
+          break
+        // Следующий и предыдущий файл списка
+        case 'KeyN':
+          void mpv.command('playlist-next', 'weak')
+          break
+        case 'KeyP':
+          void mpv.command('playlist-prev', 'weak')
           break
         case 'KeyO':
           if (event.ctrlKey) openFile()
@@ -347,9 +393,11 @@ export function App(): JSX.Element {
     adjustSubDelay,
     tracksOpen,
     menuAt,
-    infoOpen,
+    panel,
     fullscreen,
-    hasFile
+    hasFile,
+    mpv,
+    settings.seekStep
   ])
 
   /**
@@ -358,13 +406,17 @@ export function App(): JSX.Element {
    * где внутри лежит кнопка.
    */
   const onSurfaceClick = (event: ReactMouseEvent<HTMLDivElement>): void => {
+    // Панель, которую только что перетащили, ушла из-под курсора, и щелчок
+    // достался видео. Это не «клик мимо панели», а хвост перетаскивания
+    if (justDragged()) return
+
     // Клик по видео мимо меню его закрывает, но не делает ничего сверх этого:
     // иначе выход из меню попутно ставил бы фильм на паузу. Проверка target
     // тут не годится — закрывать нужно и при клике по кнопке на панели
-    if (menuAt || tracksOpen || infoOpen) {
+    if (menuAt || tracksOpen || panel) {
       setMenuAt(null)
       setTracksOpen(false)
-      setInfoOpen(false)
+      setPanel(null)
       return
     }
 
@@ -393,23 +445,28 @@ export function App(): JSX.Element {
 
   /**
    * Перетаскивание. Файл субтитров подключается к тому, что уже играет, —
-   * подменять им видео было бы явно не тем, чего от жеста ждут.
+   * подменять им видео было бы явно не тем, чего от жеста ждут. Остальные
+   * файлы открываются списком: первый играет, прочие встают в очередь.
    */
   const onDrop = (event: React.DragEvent<HTMLDivElement>): void => {
     event.preventDefault()
-    const file = event.dataTransfer.files[0]
-    if (!file) return
 
-    const filePath = window.keyframe.getPathForFile(file)
-    if (!filePath) return
+    const paths = Array.from(event.dataTransfer.files)
+      .map((file) => window.keyframe.getPathForFile(file))
+      .filter((path): path is string => Boolean(path))
 
-    if (SUBTITLE_EXTENSIONS.test(filePath) && hasFile) {
-      void mpv.command('sub-add', filePath, 'select')
-      showOsd({ label: 'Субтитры добавлены' })
+    if (paths.length === 0) return
+
+    const subtitles = paths.filter((path) => SUBTITLE_EXTENSIONS.test(path))
+    const media = paths.filter((path) => !SUBTITLE_EXTENSIONS.test(path))
+
+    if (hasFile && media.length === 0) {
+      for (const subtitle of subtitles) void mpv.command('sub-add', subtitle, 'select')
+      showOsd({ label: subtitles.length > 1 ? `Субтитры: ${subtitles.length}` : 'Субтитры добавлены' })
       return
     }
 
-    void mpv.command('loadfile', filePath, 'replace')
+    void window.keyframe.playlist.open(media)
   }
 
   const menuActions: MenuActions = {
@@ -421,7 +478,9 @@ export function App(): JSX.Element {
     toggleFullscreen,
     screenshot: () => void takeScreenshot(),
     openFile,
-    showInfo: () => setInfoOpen(true)
+    showInfo: () => setPanel('info'),
+    showSettings: () => setPanel('settings'),
+    showPlaylist: () => setPanel('playlist')
   }
 
   // Пока таймлайн тащат, показываем позицию под пальцем, а не отстающую от mpv
@@ -468,7 +527,20 @@ export function App(): JSX.Element {
         />
       )}
 
-      {infoOpen && <FileInfo player={player} onClose={() => setInfoOpen(false)} />}
+      {panel === 'info' && <FileInfo player={player} onClose={() => setPanel(null)} />}
+
+      {panel === 'settings' && (
+        <SettingsPanel settings={settings} onChange={updateSettings} onClose={() => setPanel(null)} />
+      )}
+
+      {panel === 'playlist' && (
+        <PlaylistPanel
+          entries={player.playlist}
+          position={player.playlistPos}
+          loopPlaylist={player.loopPlaylist}
+          onClose={() => setPanel(null)}
+        />
+      )}
 
       <div className="chrome-layer" data-hidden={!chromeVisible}>
         <div className="titlebar" onMouseDown={startDrag} onDoubleClick={() => void window.keyframe.window.toggleMaximize()}>
@@ -519,6 +591,12 @@ export function App(): JSX.Element {
               ref={timeline.ref}
               data-scrubbing={timeline.ratio !== null}
               {...timeline.handlers}
+              onPointerMove={(event) => {
+                timeline.handlers.onPointerMove(event)
+                onTimelineHover(event)
+              }}
+              onPointerEnter={onTimelineHover}
+              onPointerLeave={hidePreview}
               role="slider"
               aria-label="Позиция воспроизведения"
               aria-valuemin={0}
@@ -531,6 +609,19 @@ export function App(): JSX.Element {
                 <div className="timeline__fill" style={{ width: `${progress}%` }} />
                 <div className="timeline__thumb" style={{ left: `${progress}%` }} />
               </div>
+
+              {preview && (
+                <div className="preview" style={{ left: `${preview.x}px` }}>
+                  <div className="preview__frame">
+                    {preview.frame ? (
+                      <img src={preview.frame} alt="" draggable={false} />
+                    ) : (
+                      <div className="preview__placeholder" />
+                    )}
+                  </div>
+                  <div className="preview__time tnum">{formatTime(preview.time)}</div>
+                </div>
+              )}
             </div>
 
             <div className="controls">
@@ -546,6 +637,35 @@ export function App(): JSX.Element {
                   </svg>
                 )}
               </button>
+
+              {player.playlist.length > 1 && (
+                <>
+                  <button
+                    className="control"
+                    onClick={() => void mpv.command('playlist-prev', 'weak')}
+                    disabled={player.playlistPos <= 0}
+                    aria-label="Предыдущий файл"
+                    title="Предыдущий файл (P)"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M13 3L7 8l6 5z" />
+                      <rect x="3" y="3" width="2" height="10" rx="1" />
+                    </svg>
+                  </button>
+                  <button
+                    className="control"
+                    onClick={() => void mpv.command('playlist-next', 'weak')}
+                    disabled={player.playlistPos >= player.playlist.length - 1}
+                    aria-label="Следующий файл"
+                    title="Следующий файл (N)"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M3 3l6 5-6 5z" />
+                      <rect x="11" y="3" width="2" height="10" rx="1" />
+                    </svg>
+                  </button>
+                </>
+              )}
 
               <div className="volume">
                 <button
@@ -611,6 +731,21 @@ export function App(): JSX.Element {
               )}
 
               <div className="spacer" />
+
+              {player.playlist.length > 1 && (
+                <button
+                  className="control"
+                  onClick={() => setPanel(panel === 'playlist' ? null : 'playlist')}
+                  data-active={panel === 'playlist'}
+                  aria-label="Список воспроизведения"
+                  title="Список воспроизведения"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
+                    <path d="M2 4h9M2 8h9M2 12h6" strokeLinecap="round" />
+                    <path d="M13 9.5l1.6 1.6L13 12.7" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              )}
 
               <Tracks
                 tracks={player.tracks}
@@ -690,10 +825,16 @@ function FileInfo({ player, onClose }: { player: PlayerState; onClose: () => voi
   const subs = player.tracks.filter((track) => track.type === 'sub')
   const activeAudio = audio.find((track) => track.id === player.aid)
   const hwOk = player.hwdec !== null && player.hwdec !== 'no'
+  const drag = useDragPanel('info')
 
   return (
-    <div className="info" onClick={(event) => event.stopPropagation()}>
-      <div className="info__head">
+    <div
+      className="info"
+      ref={drag.ref}
+      style={drag.style}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <div className="info__head" {...drag.handleProps}>
         <span className="info__name" title={player.path ?? undefined}>
           {player.filename ?? 'Ничего не открыто'}
         </span>

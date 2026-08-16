@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { DEFAULT_SETTINGS, type Settings } from '../../shared/settings'
+
+export type { Settings }
 
 /** Запись из track-list mpv; нужные нам поля. */
 export interface Track {
@@ -9,6 +12,14 @@ export interface Track {
   external?: boolean
   codec?: string
   'demux-channel-count'?: number
+}
+
+/** Запись плейлиста mpv. */
+export interface PlaylistEntry {
+  filename: string
+  title?: string
+  current?: boolean
+  playing?: boolean
 }
 
 export interface PlayerState {
@@ -39,8 +50,11 @@ export interface PlayerState {
   subDelay: number
   audioDelay: number
   loop: boolean
+  loopPlaylist: boolean
   /** Пропорции кадра: -1 — как в файле */
   aspect: number
+  playlist: PlaylistEntry[]
+  playlistPos: number
 }
 
 const INITIAL: PlayerState = {
@@ -68,7 +82,10 @@ const INITIAL: PlayerState = {
   subDelay: 0,
   audioDelay: 0,
   loop: false,
-  aspect: -1
+  loopPlaylist: false,
+  aspect: -1,
+  playlist: [],
+  playlistPos: -1
 }
 
 /** mpv отдаёт «дорожка не выбрана» как false, выбранную — как число. */
@@ -135,8 +152,14 @@ export function usePlayer(): PlayerState {
           // loop-file — это false или 'inf'/число повторов, а не булево
           case 'loop-file':
             return { ...prev, loop: value !== false && value !== 'no' }
+          case 'loop-playlist':
+            return { ...prev, loopPlaylist: value !== false && value !== 'no' }
           case 'video-aspect-override':
             return { ...prev, aspect: num(value, -1) }
+          case 'playlist':
+            return { ...prev, playlist: Array.isArray(value) ? (value as PlaylistEntry[]) : [] }
+          case 'playlist-pos':
+            return { ...prev, playlistPos: num(value, -1) }
           default:
             return prev
         }
@@ -181,6 +204,25 @@ export function usePlayer(): PlayerState {
   return state
 }
 
+/**
+ * Настройки: главный процесс — единственный, кто их хранит. Интерфейс всегда
+ * показывает то, что вернулось оттуда, а не то, что предположил сам.
+ */
+export function useSettings(): [Settings, (patch: Partial<Settings>) => void] {
+  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS)
+
+  useEffect(() => {
+    void window.keyframe.settings.get().then(setSettings)
+    return window.keyframe.settings.onChange(setSettings)
+  }, [])
+
+  const update = useCallback((patch: Partial<Settings>): void => {
+    void window.keyframe.settings.set(patch).then(setSettings)
+  }, [])
+
+  return [settings, update]
+}
+
 export interface OsdMessage {
   /** Меняется на каждом показе — по нему перезапускается анимация */
   id: number
@@ -213,6 +255,56 @@ export function useOsd(): [OsdMessage | null, (message: Omit<OsdMessage, 'id'>) 
   }, [])
 
   return [message, show]
+}
+
+export interface Preview {
+  /** Секунда под курсором */
+  time: number
+  /** Отступ подсказки от левого края дорожки в пикселях */
+  x: number
+  /** data-URL кадра; null — пока не готов */
+  frame: string | null
+}
+
+/**
+ * Превью кадра под курсором на таймлайне.
+ *
+ * Кадры приходят из главного процесса и там же кэшируются. Последний
+ * показанный кадр держится до прихода следующего: гасить картинку на каждое
+ * движение мыши — мельтешение, а сосед по времени всё равно похож.
+ */
+export function usePreview(duration: number): [Preview | null, (time: number, x: number) => void, () => void] {
+  const [preview, setPreview] = useState<Preview | null>(null)
+  const lastFrame = useRef<string | null>(null)
+  const inFlight = useRef(false)
+
+  const show = useCallback(
+    (time: number, x: number): void => {
+      setPreview({ time, x, frame: lastFrame.current })
+
+      if (duration <= 0 || inFlight.current) return
+      inFlight.current = true
+
+      void window.keyframe.mpv
+        .thumbnail(time)
+        .then((frame) => {
+          if (!frame) return
+          lastFrame.current = frame
+          setPreview((prev) => (prev ? { ...prev, frame } : prev))
+        })
+        .finally(() => {
+          inFlight.current = false
+        })
+    },
+    [duration]
+  )
+
+  const hide = useCallback((): void => {
+    lastFrame.current = null
+    setPreview(null)
+  }, [])
+
+  return [preview, show, hide]
 }
 
 export interface Notice {

@@ -141,6 +141,8 @@ export interface MenuActions {
   screenshot: () => void
   openFile: () => void
   showInfo: () => void
+  showSettings: () => void
+  showPlaylist: () => void
 }
 
 /**
@@ -332,6 +334,36 @@ export function ContextMenu({
             ))}
           </Sub>
 
+          <Sub
+            label="Список"
+            value={player.playlist.length > 1 ? `${player.playlistPos + 1} из ${player.playlist.length}` : undefined}
+          >
+            <Item
+              label="Следующий файл"
+              hint="N"
+              disabled={player.playlistPos >= player.playlist.length - 1}
+              onClick={run(() => void mpv.command('playlist-next', 'weak'))}
+            />
+            <Item
+              label="Предыдущий файл"
+              hint="P"
+              disabled={player.playlistPos <= 0}
+              onClick={run(() => void mpv.command('playlist-prev', 'weak'))}
+            />
+            <Separator />
+            <Item label="Показать список" onClick={run(actions.showPlaylist)} />
+            <Item
+              label="Повторять список"
+              checked={player.loopPlaylist}
+              onClick={run(() => void mpv.set('loop-playlist', player.loopPlaylist ? 'no' : 'inf'))}
+            />
+            <Item
+              label="Очистить список"
+              disabled={player.playlist.length < 2}
+              onClick={run(() => void window.keyframe.playlist.clear())}
+            />
+          </Sub>
+
           <Separator />
           <Item
             label="Повторять файл"
@@ -365,6 +397,7 @@ export function ContextMenu({
 
       <Separator />
       <Item label="Открыть файл…" hint="Ctrl+O" onClick={run(actions.openFile)} />
+      <Item label="Настройки" onClick={run(actions.showSettings)} />
       <Item label="Выход" onClick={run(() => void window.keyframe.window.close())} />
     </div>
   )
