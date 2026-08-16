@@ -1,7 +1,9 @@
-import { spawn, type ChildProcess } from 'node:child_process'
 import net from 'node:net'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { EventEmitter } from 'node:events'
 import { randomBytes } from 'node:crypto'
+import { Worker } from 'node:worker_threads'
 
 /**
  * Свойства mpv, за которыми мы следим постоянно. Каждое получает числовой id,
@@ -60,7 +62,12 @@ interface PendingCommand {
  * Процесс намеренно отдельный: сегфолт в декодере убивает mpv, но не приложение.
  */
 export class Mpv extends EventEmitter {
-  private proc: ChildProcess | null = null
+  /** Поток, который держит дочерний процесс mpv */
+  private worker: Worker | null = null
+  /** pid mpv: приходит из потока сразу после запуска */
+  private pid: number | null = null
+  /** Закрыть попросили раньше, чем стал известен pid */
+  private killPending = false
   private socket: net.Socket | null = null
   private readonly pipePath: string
   private nextRequestId = 1
@@ -75,39 +82,55 @@ export class Mpv extends EventEmitter {
    * hwnd — окно, в которое рисовать. null означает экземпляр без вывода:
    * такой нужен для превью кадров, где картинка забирается прямо у декодера
    * и никуда не показывается.
+   *
+   * extraArgs — то, что мы знаем ещё до запуска: громкость, языки дорожек,
+   * размер субтитров. Флагом это стоит нисколько, а той же командой после
+   * старта — круг по каналу и первые секунды фильма на чужой громкости.
    */
   constructor(
     private readonly mpvExePath: string,
-    private readonly hwnd: string | null
+    private readonly hwnd: string | null,
+    private readonly extraArgs: string[] = []
   ) {
     super()
     this.pipePath = `\\\\.\\pipe\\keyframe-mpv-${process.pid}-${randomBytes(4).toString('hex')}`
   }
 
   async start(): Promise<void> {
-    const args = this.hwnd === null ? this.headlessArgs() : this.playerArgs()
+    const args = [...(this.hwnd === null ? this.headlessArgs() : this.playerArgs()), ...this.extraArgs]
 
-    this.proc = spawn(this.mpvExePath, args, {
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe']
+    this.worker = new Worker(path.join(path.dirname(fileURLToPath(import.meta.url)), 'spawner.js'), {
+      workerData: { exe: this.mpvExePath, args }
     })
 
-    this.proc.stderr?.on('data', (chunk: Buffer) => {
-      const text = chunk.toString().trim()
-      if (text) this.emit('log', text)
+    this.worker.on('message', (message: Record<string, unknown>) => {
+      switch (message.type) {
+        case 'spawned':
+          this.pid = (message.pid as number | undefined) ?? null
+          if (this.killPending) this.stop()
+          break
+
+        case 'log':
+          this.emit('log', message.text)
+          break
+
+        case 'error':
+          this.emit('error', new Error(String(message.message)))
+          break
+
+        case 'exit':
+          this.socket?.destroy()
+          this.socket = null
+          this.pid = null
+          // Отклоняем всё, что не успело получить ответ
+          for (const [, p] of this.pending) p.reject(new Error('mpv завершился'))
+          this.pending.clear()
+          this.emit('exit', { code: message.code, signal: message.signal })
+          break
+      }
     })
 
-    this.proc.on('exit', (code, signal) => {
-      this.socket?.destroy()
-      this.socket = null
-      this.proc = null
-      // Отклоняем всё, что не успело получить ответ
-      for (const [, p] of this.pending) p.reject(new Error('mpv завершился'))
-      this.pending.clear()
-      this.emit('exit', { code, signal })
-    })
-
-    this.proc.on('error', (err) => this.emit('error', err))
+    this.worker.on('error', (err) => this.emit('error', err))
 
     await this.connect()
     if (this.hwnd !== null) await this.observeAll()
@@ -194,7 +217,10 @@ export class Mpv extends EventEmitter {
         if (Date.now() > deadline) {
           throw new Error(`Не удалось подключиться к mpv за ${timeoutMs} мс: ${String(err)}`)
         }
-        await new Promise((r) => setTimeout(r, 50))
+        // Шаг мелкий намеренно: канал появляется через считанные миллисекунды
+        // после запуска, и пауза в полсотни миллисекунд между попытками
+        // целиком уходила в задержку старта
+        await new Promise((r) => setTimeout(r, 4))
       }
     }
 
@@ -284,13 +310,31 @@ export class Mpv extends EventEmitter {
   }
 
   get isRunning(): boolean {
-    return this.proc !== null
+    return this.pid !== null
   }
 
+  /**
+   * Процесс убиваем по pid прямо отсюда, а не просьбой к потоку: закрытие
+   * приложения не ждёт обмена сообщениями, и mpv остался бы жить сиротой.
+   */
   stop(): void {
     this.socket?.destroy()
     this.socket = null
-    this.proc?.kill()
-    this.proc = null
+
+    if (this.pid === null) {
+      // Поток ещё не успел сообщить pid — закроем, как только сообщит
+      this.killPending = true
+      return
+    }
+
+    this.killPending = false
+    try {
+      process.kill(this.pid)
+    } catch {
+      // Уже завершился сам — ровно то, чего мы и добивались
+    }
+    this.pid = null
+    void this.worker?.terminate()
+    this.worker = null
   }
 }

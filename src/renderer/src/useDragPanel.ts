@@ -64,7 +64,15 @@ export function useDragPanel(id: string): {
 } {
   const ref = useRef<HTMLDivElement | null>(null)
   const [point, setPoint] = useState<Point | null>(positions.get(id) ?? null)
-  const grab = useRef<{ dx: number; dy: number; width: number } | null>(null)
+  const grab = useRef<{
+    dx: number
+    dy: number
+    width: number
+    /** Где панель стояла в момент захвата: от неё считается transform */
+    origin: Point
+    /** Где она стоит сейчас */
+    at: Point
+  } | null>(null)
 
   // Окно могли уменьшить, пока панель была закрыта: возвращаем её в поле зрения
   useEffect(() => {
@@ -86,7 +94,29 @@ export function useDragPanel(id: string): {
       if (!element) return
 
       const box = element.getBoundingClientRect()
-      grab.current = { dx: event.clientX - box.left, dy: event.clientY - box.top, width: box.width }
+      grab.current = {
+        dx: event.clientX - box.left,
+        dy: event.clientY - box.top,
+        width: box.width,
+        origin: { left: box.left, top: box.top },
+        at: { left: box.left, top: box.top }
+      }
+
+      /*
+       * Дальше панель двигается мимо React: координаты пишутся прямо в стиль
+       * элемента, а само смещение — transform, а не left и top.
+       *
+       * Так и должно быть именно здесь: панель полупрозрачная, с тенью в
+       * полсотни пикселей, и лежит она в прозрачном окне поверх чужого
+       * нативного видеослоя. Смена left заставляет пересчитать раскладку и
+       * заново нарисовать всю эту тень на каждое движение мыши, а transform
+       * composited — окно только сдвигает уже нарисованный слой.
+       */
+      element.style.left = `${box.left}px`
+      element.style.top = `${box.top}px`
+      element.style.transform = 'translate3d(0,0,0)'
+      element.style.animation = 'none'
+      element.style.willChange = 'transform'
 
       // Первое движение начинается ровно оттуда, где панель стоит сейчас,
       // — без рывка из центра в точку захвата
@@ -96,24 +126,48 @@ export function useDragPanel(id: string): {
     []
   )
 
-  const onPointerMove = useCallback(
+  /*
+   * Обработка идёт сразу, без откладывания до следующего кадра: Chromium и так
+   * присылает pointermove не чаще одного раза на кадр, а собственное
+   * разрежение поверх этого только добавляло бы жесту кадр отставания.
+   */
+  const onPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>): void => {
+    const held = grab.current
+    const element = ref.current
+    if (!held || !element) return
+
+    held.at = clamp({ left: event.clientX - held.dx, top: event.clientY - held.dy }, held.width)
+    element.style.transform = `translate3d(${held.at.left - held.origin.left}px, ${held.at.top - held.origin.top}px, 0)`
+  }, [])
+
+  const release = useCallback(
     (event: ReactPointerEvent<HTMLElement>): void => {
       const held = grab.current
       if (!held) return
+      grab.current = null
+      draggedAt = Date.now()
+      event.currentTarget.releasePointerCapture(event.pointerId)
 
-      const next = clamp({ left: event.clientX - held.dx, top: event.clientY - held.dy }, held.width)
-      positions.set(id, next)
-      setPoint(next)
+      /*
+       * Итог жеста переносится из transform в left и top — и сразу в стиле
+       * элемента, и в состоянии. Обе записи здесь нужны: React перерисует
+       * панель теми же числами и ничего не сдвинет, а без прямой записи между
+       * сбросом transform и перерисовкой был бы кадр, в котором панель стоит
+       * там, где её взяли.
+       */
+      const element = ref.current
+      if (element) {
+        element.style.left = `${held.at.left}px`
+        element.style.top = `${held.at.top}px`
+        element.style.transform = 'none'
+        element.style.willChange = ''
+      }
+
+      positions.set(id, held.at)
+      setPoint(held.at)
     },
     [id]
   )
-
-  const release = useCallback((event: ReactPointerEvent<HTMLElement>): void => {
-    if (!grab.current) return
-    grab.current = null
-    draggedAt = Date.now()
-    event.currentTarget.releasePointerCapture(event.pointerId)
-  }, [])
 
   return {
     ref,

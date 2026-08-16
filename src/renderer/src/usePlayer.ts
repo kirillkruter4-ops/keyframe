@@ -25,7 +25,6 @@ export interface PlaylistEntry {
 export interface PlayerState {
   ready: boolean
   paused: boolean
-  timePos: number
   duration: number
   volume: number
   muted: boolean
@@ -33,7 +32,6 @@ export interface PlayerState {
   /** Полный путь: нужен, чтобы показать файл в проводнике */
   path: string | null
   coreIdle: boolean
-  cacheDuration: number
   videoWidth: number | null
   videoHeight: number | null
   hwdec: string | null
@@ -60,14 +58,12 @@ export interface PlayerState {
 const INITIAL: PlayerState = {
   ready: false,
   paused: true,
-  timePos: 0,
   duration: 0,
   volume: 100,
   muted: false,
   filename: null,
   path: null,
   coreIdle: true,
-  cacheDuration: 0,
   videoWidth: null,
   videoHeight: null,
   hwdec: null,
@@ -98,72 +94,143 @@ function num(value: unknown, fallback = 0): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
 
+/*
+ * Разрежения событий мыши по кадрам здесь нет намеренно.
+ *
+ * Оно было и оказалось вредным: Chromium сам объединяет pointermove и выдаёт
+ * их не чаще одного раза на кадр, поэтому экономить было нечего, а
+ * откладывание до следующего кадра добавляло жестам заметное отставание.
+ * Дорого обходились не сами события, а перерисовка дерева React на каждое из
+ * них, — и решается это тем, что движущееся пишется прямо в DOM.
+ */
+
+/**
+ * Свойства, которые mpv шлёт с частотой кадров видео.
+ *
+ * В состояние React они не попадают вовсе. Перерисовывать всё дерево сто
+ * двадцать раз в секунду ради двух чисел нельзя, а разрежать поток — значит
+ * получить ступенчатый ползунок. Поэтому тот, кто их показывает, подписывается
+ * на них напрямую и пишет в DOM сам: см. useMpvProperty.
+ */
+const HOT = new Set(['time-pos', 'demuxer-cache-duration'])
+
+/**
+ * Подписка на одно свойство mpv, минуя состояние.
+ *
+ * Обработчик держим в ссылке: подписка не должна пересоздаваться на каждой
+ * перерисовке — иначе события успевали бы теряться между отпиской и подпиской.
+ */
+export function useMpvProperty(name: string, apply: (value: unknown) => void): void {
+  const callback = useRef(apply)
+  callback.current = apply
+
+  useEffect(() => {
+    // Значение, пришедшее до подписки: оно не повторится само
+    void window.keyframe.mpv.state().then((snapshot) => {
+      if (name in snapshot) callback.current(snapshot[name])
+    })
+
+    return window.keyframe.mpv.onProperty((incoming, value) => {
+      if (incoming === name) callback.current(value)
+    })
+  }, [name])
+}
+
+/**
+ * Одно свойство mpv — одно поле состояния. Отдельной функцией, а не внутри
+ * хука: так пачку изменений можно свести в одно обновление состояния.
+ */
+function reduce(prev: PlayerState, name: string, value: unknown): PlayerState {
+  switch (name) {
+    case 'pause':
+      return { ...prev, paused: Boolean(value) }
+    case 'duration':
+      return { ...prev, duration: num(value) }
+    case 'volume':
+      return { ...prev, volume: num(value, prev.volume) }
+    case 'mute':
+      return { ...prev, muted: Boolean(value) }
+    case 'filename':
+      return { ...prev, filename: typeof value === 'string' ? value : null }
+    case 'path':
+      return { ...prev, path: typeof value === 'string' ? value : null }
+    case 'core-idle':
+      return { ...prev, coreIdle: Boolean(value) }
+    case 'video-params/w':
+      return { ...prev, videoWidth: typeof value === 'number' ? value : null }
+    case 'video-params/h':
+      return { ...prev, videoHeight: typeof value === 'number' ? value : null }
+    case 'hwdec-current':
+      return { ...prev, hwdec: typeof value === 'string' ? value : null }
+    case 'frame-drop-count':
+      return { ...prev, frameDrops: num(value) }
+    case 'estimated-vf-fps':
+      return { ...prev, fps: typeof value === 'number' ? value : null }
+    case 'speed':
+      return { ...prev, speed: num(value, 1) }
+    case 'track-list':
+      return { ...prev, tracks: Array.isArray(value) ? (value as Track[]) : [] }
+    case 'sid':
+      return { ...prev, sid: trackId(value) }
+    case 'aid':
+      return { ...prev, aid: trackId(value) }
+    case 'sub-visibility':
+      return { ...prev, subVisible: Boolean(value) }
+    case 'sub-delay':
+      return { ...prev, subDelay: num(value) }
+    case 'audio-delay':
+      return { ...prev, audioDelay: num(value) }
+    // loop-file — это false или 'inf'/число повторов, а не булево
+    case 'loop-file':
+      return { ...prev, loop: value !== false && value !== 'no' }
+    case 'loop-playlist':
+      return { ...prev, loopPlaylist: value !== false && value !== 'no' }
+    case 'video-aspect-override':
+      return { ...prev, aspect: num(value, -1) }
+    case 'playlist':
+      return { ...prev, playlist: Array.isArray(value) ? (value as PlaylistEntry[]) : [] }
+    case 'playlist-pos':
+      return { ...prev, playlistPos: num(value, -1) }
+    default:
+      return prev
+  }
+}
+
 export function usePlayer(): PlayerState {
   const [state, setState] = useState<PlayerState>(INITIAL)
 
   useEffect(() => {
     const api = window.keyframe.mpv
 
-    const applyProperty = (name: string, value: unknown): void => {
+    /*
+     * Изменения копятся до ближайшего кадра и применяются одним обновлением.
+     *
+     * Каждое сообщение из главного процесса — отдельная задача, и React не
+     * объединяет их сам: девять свойств подряд после загрузки файла давали
+     * девять перерисовок всего дерева. Копим в Map, а не в списке: у свойства
+     * важно последнее значение, и пока окно свёрнуто и кадры не рисуются,
+     * очередь не растёт.
+     */
+    const pending = new Map<string, unknown>()
+    let frame: number | null = null
+
+    const flush = (): void => {
+      frame = null
+      if (pending.size === 0) return
+
+      const batch = [...pending]
+      pending.clear()
       setState((prev) => {
-        switch (name) {
-          case 'pause':
-            return { ...prev, paused: Boolean(value) }
-          case 'time-pos':
-            return { ...prev, timePos: num(value) }
-          case 'duration':
-            return { ...prev, duration: num(value) }
-          case 'volume':
-            return { ...prev, volume: num(value, prev.volume) }
-          case 'mute':
-            return { ...prev, muted: Boolean(value) }
-          case 'filename':
-            return { ...prev, filename: typeof value === 'string' ? value : null }
-          case 'path':
-            return { ...prev, path: typeof value === 'string' ? value : null }
-          case 'core-idle':
-            return { ...prev, coreIdle: Boolean(value) }
-          case 'demuxer-cache-duration':
-            return { ...prev, cacheDuration: num(value) }
-          case 'video-params/w':
-            return { ...prev, videoWidth: typeof value === 'number' ? value : null }
-          case 'video-params/h':
-            return { ...prev, videoHeight: typeof value === 'number' ? value : null }
-          case 'hwdec-current':
-            return { ...prev, hwdec: typeof value === 'string' ? value : null }
-          case 'frame-drop-count':
-            return { ...prev, frameDrops: num(value) }
-          case 'estimated-vf-fps':
-            return { ...prev, fps: typeof value === 'number' ? value : null }
-          case 'speed':
-            return { ...prev, speed: num(value, 1) }
-          case 'track-list':
-            return { ...prev, tracks: Array.isArray(value) ? (value as Track[]) : [] }
-          case 'sid':
-            return { ...prev, sid: trackId(value) }
-          case 'aid':
-            return { ...prev, aid: trackId(value) }
-          case 'sub-visibility':
-            return { ...prev, subVisible: Boolean(value) }
-          case 'sub-delay':
-            return { ...prev, subDelay: num(value) }
-          case 'audio-delay':
-            return { ...prev, audioDelay: num(value) }
-          // loop-file — это false или 'inf'/число повторов, а не булево
-          case 'loop-file':
-            return { ...prev, loop: value !== false && value !== 'no' }
-          case 'loop-playlist':
-            return { ...prev, loopPlaylist: value !== false && value !== 'no' }
-          case 'video-aspect-override':
-            return { ...prev, aspect: num(value, -1) }
-          case 'playlist':
-            return { ...prev, playlist: Array.isArray(value) ? (value as PlaylistEntry[]) : [] }
-          case 'playlist-pos':
-            return { ...prev, playlistPos: num(value, -1) }
-          default:
-            return prev
-        }
+        let next = prev
+        for (const [name, value] of batch) next = reduce(next, name, value)
+        return next
       })
+    }
+
+    const applyProperty = (name: string, value: unknown): void => {
+      if (HOT.has(name)) return
+      pending.set(name, value)
+      if (frame === null) frame = requestAnimationFrame(flush)
     }
 
     /**
@@ -186,6 +253,7 @@ export function usePlayer(): PlayerState {
     // состояние там от мёртвого процесса, и его нужно забыть целиком —
     // а верное взять у нового
     const offReady = api.onReady(() => {
+      pending.clear()
       setState({ ...INITIAL, ready: true })
       pullSnapshot()
     })
@@ -195,6 +263,7 @@ export function usePlayer(): PlayerState {
     pullSnapshot()
 
     return () => {
+      if (frame !== null) cancelAnimationFrame(frame)
       offProperty()
       offReady()
       offExit()
@@ -255,56 +324,6 @@ export function useOsd(): [OsdMessage | null, (message: Omit<OsdMessage, 'id'>) 
   }, [])
 
   return [message, show]
-}
-
-export interface Preview {
-  /** Секунда под курсором */
-  time: number
-  /** Отступ подсказки от левого края дорожки в пикселях */
-  x: number
-  /** data-URL кадра; null — пока не готов */
-  frame: string | null
-}
-
-/**
- * Превью кадра под курсором на таймлайне.
- *
- * Кадры приходят из главного процесса и там же кэшируются. Последний
- * показанный кадр держится до прихода следующего: гасить картинку на каждое
- * движение мыши — мельтешение, а сосед по времени всё равно похож.
- */
-export function usePreview(duration: number): [Preview | null, (time: number, x: number) => void, () => void] {
-  const [preview, setPreview] = useState<Preview | null>(null)
-  const lastFrame = useRef<string | null>(null)
-  const inFlight = useRef(false)
-
-  const show = useCallback(
-    (time: number, x: number): void => {
-      setPreview({ time, x, frame: lastFrame.current })
-
-      if (duration <= 0 || inFlight.current) return
-      inFlight.current = true
-
-      void window.keyframe.mpv
-        .thumbnail(time)
-        .then((frame) => {
-          if (!frame) return
-          lastFrame.current = frame
-          setPreview((prev) => (prev ? { ...prev, frame } : prev))
-        })
-        .finally(() => {
-          inFlight.current = false
-        })
-    },
-    [duration]
-  )
-
-  const hide = useCallback((): void => {
-    lastFrame.current = null
-    setPreview(null)
-  }, [])
-
-  return [preview, show, hide]
 }
 
 export interface Notice {
@@ -479,9 +498,13 @@ export function useWindowDrag(): (event: React.MouseEvent) => void {
 /** Прячет хром после простоя мыши; любое движение возвращает его. */
 export function useIdleChrome(idleMs: number, active: boolean): boolean {
   const [visible, setVisible] = useState(true)
+  // Хром почти всегда уже виден, а движение мыши приходит сотни раз в секунду.
+  // Флаг рядом с состоянием избавляет от обращения к React на каждое из них
+  const shown = useRef(true)
 
   useEffect(() => {
     if (!active) {
+      shown.current = true
       setVisible(true)
       return
     }
@@ -489,9 +512,15 @@ export function useIdleChrome(idleMs: number, active: boolean): boolean {
     let timer: ReturnType<typeof setTimeout>
 
     const bump = (): void => {
-      setVisible(true)
+      if (!shown.current) {
+        shown.current = true
+        setVisible(true)
+      }
       clearTimeout(timer)
-      timer = setTimeout(() => setVisible(false), idleMs)
+      timer = setTimeout(() => {
+        shown.current = false
+        setVisible(false)
+      }, idleMs)
     }
 
     bump()

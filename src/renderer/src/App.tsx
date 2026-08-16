@@ -14,7 +14,6 @@ import {
   useScrub,
   useOsd,
   useNotice,
-  usePreview,
   useSettings,
   useUpdate,
   type PlayerState,
@@ -24,28 +23,16 @@ import {
 } from './usePlayer'
 import { ContextMenu, Tracks, trackLabel, type MenuActions } from './ContextMenu'
 import { PlaylistPanel, SettingsPanel } from './Settings'
+import { Timecode, Timeline } from './Timeline'
 import { justDragged, useDragPanel } from './useDragPanel'
+import { formatTime } from './format'
 import logoUrl from './assets/logo.svg'
 
 /** Шаги скорости. Ниже 0.25 речь неразборчива, выше 3 — бессмысленна. */
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3]
 
-/** Ширина превью кадра и боковой отступ панели — те же числа, что в styles.css. */
-const PREVIEW_WIDTH = 170
-const CHROME_PADDING = 16
-
 /** Такой файл перетащили как субтитры, а не как видео. */
 const SUBTITLE_EXTENSIONS = /\.(srt|ass|ssa|sub|vtt|sup|idx|lrc)$/i
-
-function formatTime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) seconds = 0
-  const total = Math.floor(seconds)
-  const h = Math.floor(total / 3600)
-  const m = Math.floor((total % 3600) / 60)
-  const s = total % 60
-  const mm = h > 0 ? String(m).padStart(2, '0') : String(m)
-  return h > 0 ? `${h}:${mm}:${String(s).padStart(2, '0')}` : `${mm}:${String(s).padStart(2, '0')}`
-}
 
 export function App(): JSX.Element {
   const player = usePlayer()
@@ -61,6 +48,10 @@ export function App(): JSX.Element {
   /** Что открыто поверх видео: разом показываем только одно. */
   const [panel, setPanel] = useState<'info' | 'settings' | 'playlist' | null>(null)
 
+  // Ссылка постоянная намеренно: панели не перерисовываются вместе с позицией
+  // воспроизведения только пока все их свойства остаются теми же самыми
+  const closePanel = useCallback(() => setPanel(null), [])
+
   const hasFile = player.filename !== null
   // Открытое меню или панель — причина не прятать хром: под курсором органы
   const chromeVisible = useIdleChrome(
@@ -69,43 +60,6 @@ export function App(): JSX.Element {
   )
 
   const mpv = window.keyframe.mpv
-
-  /**
-   * Пока тащим — перематываем по ключевым кадрам: так картинка успевает за
-   * пальцем. На отпускании один точный переход в нужную позицию.
-   */
-  const timeline = useScrub((ratio, done) => {
-    if (player.duration <= 0) return
-    void mpv.command('seek', ratio * player.duration, done ? 'absolute' : 'absolute+keyframes')
-  })
-
-  const [preview, showPreview, hidePreview] = usePreview(player.duration)
-
-  /**
-   * Подсказка следует за курсором по дорожке — и во время протяжки тоже:
-   * оторвать её от пальца значило бы перематывать вслепую как раз тогда,
-   * когда точность нужна больше всего.
-   */
-  const onTimelineHover = (event: React.PointerEvent<HTMLDivElement>): void => {
-    const track = timeline.ref.current
-    if (!track || player.duration <= 0) return
-
-    const box = track.getBoundingClientRect()
-    if (box.width === 0) return
-
-    const ratio = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width))
-
-    /*
-     * Подсказка центрируется по курсору, поэтому у краёв дорожки её надо
-     * придержать: половина ширины кадра плюс отступ панели — ровно то, что
-     * ещё помещается в окно. Время при этом остаётся честным, смещается
-     * только сама картинка.
-     */
-    const overhang = PREVIEW_WIDTH / 2 - CHROME_PADDING
-    const x = Math.min(Math.max(ratio * box.width, overhang), box.width - overhang)
-
-    showPreview(ratio * player.duration, x)
-  }
 
   const volume = useScrub((ratio) => {
     void mpv.set('volume', Math.round(ratio * 100))
@@ -483,19 +437,6 @@ export function App(): JSX.Element {
     showPlaylist: () => setPanel('playlist')
   }
 
-  // Пока таймлайн тащат, показываем позицию под пальцем, а не отстающую от mpv
-  const progress =
-    timeline.ratio !== null
-      ? timeline.ratio * 100
-      : player.duration > 0
-        ? (player.timePos / player.duration) * 100
-        : 0
-
-  const buffered =
-    player.duration > 0
-      ? Math.min(100, ((player.timePos + player.cacheDuration) / player.duration) * 100)
-      : 0
-
   const volumeLevel = player.muted ? 0 : volume.ratio !== null ? volume.ratio * 100 : player.volume
 
   // Выкрученный в ноль ползунок — это тоже «звука нет», иконка должна совпадать
@@ -527,10 +468,10 @@ export function App(): JSX.Element {
         />
       )}
 
-      {panel === 'info' && <FileInfo player={player} onClose={() => setPanel(null)} />}
+      {panel === 'info' && <FileInfo player={player} onClose={closePanel} />}
 
       {panel === 'settings' && (
-        <SettingsPanel settings={settings} onChange={updateSettings} onClose={() => setPanel(null)} />
+        <SettingsPanel settings={settings} onChange={updateSettings} onClose={closePanel} />
       )}
 
       {panel === 'playlist' && (
@@ -538,7 +479,7 @@ export function App(): JSX.Element {
           entries={player.playlist}
           position={player.playlistPos}
           loopPlaylist={player.loopPlaylist}
-          onClose={() => setPanel(null)}
+          onClose={closePanel}
         />
       )}
 
@@ -586,43 +527,7 @@ export function App(): JSX.Element {
 
         {hasFile && (
           <div className="chrome">
-            <div
-              className="timeline"
-              ref={timeline.ref}
-              data-scrubbing={timeline.ratio !== null}
-              {...timeline.handlers}
-              onPointerMove={(event) => {
-                timeline.handlers.onPointerMove(event)
-                onTimelineHover(event)
-              }}
-              onPointerEnter={onTimelineHover}
-              onPointerLeave={hidePreview}
-              role="slider"
-              aria-label="Позиция воспроизведения"
-              aria-valuemin={0}
-              aria-valuemax={player.duration}
-              aria-valuenow={player.timePos}
-              tabIndex={0}
-            >
-              <div className="timeline__track">
-                <div className="timeline__buffer" style={{ width: `${buffered}%` }} />
-                <div className="timeline__fill" style={{ width: `${progress}%` }} />
-                <div className="timeline__thumb" style={{ left: `${progress}%` }} />
-              </div>
-
-              {preview && (
-                <div className="preview" style={{ left: `${preview.x}px` }}>
-                  <div className="preview__frame">
-                    {preview.frame ? (
-                      <img src={preview.frame} alt="" draggable={false} />
-                    ) : (
-                      <div className="preview__placeholder" />
-                    )}
-                  </div>
-                  <div className="preview__time tnum">{formatTime(preview.time)}</div>
-                </div>
-              )}
-            </div>
+            <Timeline duration={player.duration} />
 
             <div className="controls">
               <button className="control" onClick={togglePause} aria-label={player.paused ? 'Играть' : 'Пауза'}>
@@ -714,10 +619,7 @@ export function App(): JSX.Element {
                 </div>
               </div>
 
-              <div className="timecode tnum">
-                <span className="timecode__current">{formatTime(player.timePos)}</span>
-                <span> / {formatTime(player.duration)}</span>
-              </div>
+              <Timecode duration={player.duration} />
 
               {player.speed !== 1 && (
                 <button

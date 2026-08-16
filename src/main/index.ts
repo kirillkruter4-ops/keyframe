@@ -222,6 +222,11 @@ function createWindows(): void {
 
   // Host не показывает ничего своего — весь его клиентский прямоугольник займёт mpv.
   // Если этот фон когда-нибудь станет виден, значит дочернее окно mpv перекрыто.
+  //
+  // Загрузку не ждём. Раньше окно показывалось по ready-to-show, и полсекунды
+  // старта уходило на ожидание того, как отдельный процесс отрисует пустой
+  // прямоугольник цвета фона. Показывать его можно сразу: backgroundColor
+  // окно красит само, а поверх всё равно ляжет дочернее окно mpv.
   hostWindow.loadURL('data:text/html,<body style="margin:0;background:%230A0A0B"></body>')
 
   overlayWindow = new BrowserWindow({
@@ -309,13 +314,21 @@ function createWindows(): void {
 
   setupUpdater(overlayWindow)
 
-  hostWindow.once('ready-to-show', async () => {
-    if (store?.window?.maximized) hostWindow!.maximize()
-    hostWindow!.show()
-    raiseOverlay()
-    updateThumbar()
-    await startMpv()
-  })
+  /*
+   * Порядок здесь — это и есть скорость запуска.
+   *
+   * Раньше окно показывалось по ready-to-show, то есть после того, как
+   * отдельный процесс отрисует пустой прямоугольник цвета фона, а движок
+   * запускался уже следом — полсекунды и почти секунда складывались одна с
+   * другой. Теперь окно показывается сразу, а движок стартует параллельно:
+   * HWND существует с момента создания окна, ждать отрисовки незачем.
+   */
+  if (store?.window?.maximized) hostWindow.maximize()
+  hostWindow.show()
+  raiseOverlay()
+  updateThumbar()
+
+  void startMpv()
 }
 
 // ---------- Питание, панель задач, медиа-клавиши ----------
@@ -451,29 +464,52 @@ async function resumeIfNeeded(): Promise<void> {
 }
 
 /**
- * Пока не выставлена сохранённая громкость, менять её в хранилище нельзя.
+ * Всё, что известно до запуска движка, уходит ему флагами командной строки.
  *
- * Сразу после подписки mpv присылает свои значения по умолчанию — сотню и
- * выключенный mute. Без этого флага они успели бы записаться поверх
- * сохранённых, и громкость не пережила бы ни одного перезапуска.
+ * Заодно это снимает старую ловушку с громкостью: mpv присылает своё значение
+ * сразу после подписки, и раньше оно затирало сохранённое, пока мы не успевали
+ * его выставить. Теперь присланное значение и есть сохранённое.
  */
-let audioRestored = false
+function startupArgs(): string[] {
+  const current = settings()
+  return [
+    `--volume=${store?.volume ?? 100}`,
+    `--mute=${store?.muted ? 'yes' : 'no'}`,
+    `--alang=${current.audioLanguage}`,
+    `--slang=${current.subtitleLanguage}`,
+    `--sub-font-size=${current.subtitleFontSize}`
+  ]
+}
+
+/**
+ * Отправка в оверлей, переживающая его смерть.
+ *
+ * Проверять одно только окно недостаточно: когда падает процесс интерфейса,
+ * окно ещё живо, а его webContents уже нет.
+ *
+ * Свойства уходят все и сразу, без разрежения по времени. Разрежение здесь
+ * пробовалось и было ошибкой: позиция воспроизведения приходит с частотой
+ * кадров, и пятнадцать сообщений в секунду вместо ста двадцати — это ползунок,
+ * который дёргается ступеньками. Держать частоту должен тот, кто рисует, а не
+ * тот, кто отправляет.
+ */
+function sendProperty(name: string, value: unknown): void {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return
+  if (overlayWindow.webContents.isDestroyed()) return
+  overlayWindow.webContents.send('mpv:property', name, value)
+}
 
 async function startMpv(): Promise<void> {
   if (!hostWindow) return
 
-  audioRestored = false
   // Кэш панели задач относился к прошлому процессу mpv
   thumbarPaused = null
   progressShown = -1
 
-  const desiredVolume = store?.volume ?? 100
-  const desiredMute = store?.muted ?? false
-
-  mpv = new Mpv(mpvExecutablePath(), nativeHandleOf(hostWindow))
+  mpv = new Mpv(mpvExecutablePath(), nativeHandleOf(hostWindow), startupArgs())
 
   mpv.on('property', (name: string, value: unknown) => {
-    overlayWindow?.webContents.send('mpv:property', name, value)
+    sendProperty(name, value)
 
     switch (name) {
       case 'pause':
@@ -496,9 +532,7 @@ async function startMpv(): Promise<void> {
 
       case 'volume':
       case 'mute':
-        if (audioRestored) {
-          store?.setAudio(Number(mpv?.state.volume ?? 100), Boolean(mpv?.state.mute))
-        }
+        store?.setAudio(Number(mpv?.state.volume ?? 100), Boolean(mpv?.state.mute))
         break
 
       case 'path':
@@ -527,21 +561,15 @@ async function startMpv(): Promise<void> {
     overlayWindow?.webContents.send('mpv:exit', info)
   })
 
+
   try {
     await mpv.start()
-
-    // Громкость восстанавливаем до загрузки файла: иначе первые секунды
-    // прозвучат на чужом уровне
-    await mpv.setProperty('volume', desiredVolume)
-    await mpv.setProperty('mute', desiredMute)
-    audioRestored = true
-
-    await applySettingsToMpv(settings())
 
     overlayWindow?.webContents.send('mpv:ready')
 
     const autoOpen = fileToOpen(process.argv)
     if (autoOpen) await openPath(mpv, autoOpen, settings().fillPlaylistFromFolder)
+
 
   } catch (err) {
     dialog.showErrorBox('Keyframe', `Не удалось запустить движок воспроизведения:\n${String(err)}`)

@@ -1,4 +1,4 @@
-import type { JSX, ReactNode } from 'react'
+import { memo, type JSX, type ReactNode } from 'react'
 import type { PlaylistEntry, Settings } from './usePlayer'
 import { useDragPanel } from './useDragPanel'
 
@@ -8,8 +8,12 @@ import { useDragPanel } from './useDragPanel'
  * Отдельного окна нет намеренно: у плеера безрамочное окно с нативным
  * видеослоем под ним, и второе окно поверх него — ещё одна сущность, которую
  * пришлось бы держать поверх host вручную. Панель живёт в том же оверлее.
+ *
+ * memo здесь не украшение: пока панель открыта, фильм идёт, и позиция
+ * воспроизведения перерисовывает всё дерево несколько раз в секунду. К
+ * содержимому панели это не относится ничем.
  */
-export function SettingsPanel({
+export const SettingsPanel = memo(function SettingsPanel({
   settings,
   onChange,
   onClose
@@ -128,7 +132,7 @@ export function SettingsPanel({
       </div>
     </div>
   )
-}
+})
 
 /**
  * Список воспроизведения.
@@ -136,7 +140,7 @@ export function SettingsPanel({
  * Показывает имена файлов, а не пути: список из одинаковых начал путей
  * нечитаем, а различает записи как раз хвост.
  */
-export function PlaylistPanel({
+export const PlaylistPanel = memo(function PlaylistPanel({
   entries,
   position,
   loopPlaylist,
@@ -202,7 +206,7 @@ export function PlaylistPanel({
       </div>
     </div>
   )
-}
+})
 
 /** Путь может быть и ссылкой на поток — режем по обоим разделителям. */
 function baseName(target: string): string {

@@ -7,7 +7,12 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        input: { index: resolve(__dirname, 'src/main/index.ts') }
+        // spawner — отдельная точка входа: он выполняется в своём потоке,
+        // и его нельзя втянуть в общий бандл главного процесса
+        input: {
+          index: resolve(__dirname, 'src/main/index.ts'),
+          spawner: resolve(__dirname, 'src/main/spawner.ts')
+        }
       }
     }
   },

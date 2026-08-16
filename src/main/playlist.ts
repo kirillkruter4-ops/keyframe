@@ -87,10 +87,17 @@ export async function openPath(mpv: Mpv, target: string, fillFromFolder: boolean
   const index = entries.findIndex((entry) => entry.toLowerCase() === full.toLowerCase())
   if (entries.length < 2 || index < 0) return
 
-  for (const entry of entries) {
-    if (entry === entries[index]) continue
-    await mpv.command('loadfile', entry, 'append')
-  }
+  /*
+   * Команды уходят пачкой, а не по очереди с ожиданием ответа на каждую.
+   * Порядок при этом сохраняется — канал один и записи в него упорядочены, —
+   * а полтысячи кругов ожидания на большой папке превращались в заметную
+   * задержку сразу после начала воспроизведения.
+   */
+  await Promise.all(
+    entries
+      .filter((entry) => entry !== entries[index])
+      .map((entry) => mpv.command('loadfile', entry, 'append'))
+  )
 
   /*
    * Открытый файл сейчас стоит первым, а остальные — в порядке папки за ним.
