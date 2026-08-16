@@ -7,7 +7,6 @@ import {
   shell,
   screen,
   nativeImage,
-  globalShortcut,
   powerSaveBlocker
 } from 'electron'
 import fs from 'node:fs'
@@ -15,7 +14,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Mpv } from './mpv'
 import { setupUpdater } from './updater'
-import { Store } from './store'
+import { Store, DEFAULT_SETTINGS, type Settings } from './store'
+import { appendPaths, isMediaFile, isPlaylistFile, openPath } from './playlist'
+import { Thumbnailer } from './thumbnailer'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
@@ -31,6 +32,17 @@ const isDev = !app.isPackaged
  * и обычные правила z-порядка снова работают.
  */
 app.commandLine.appendSwitch('disable-direct-composition')
+
+/**
+ * Идентификатор приложения для Windows: по нему группируются окна в панели
+ * задач и подписываются уведомления.
+ *
+ * На системную плашку проигрывателя он не влияет: её регистрирует mpv из
+ * своего процесса, а идентификатор процессу не наследуется — в плашке
+ * останется имя mpv. Исправить это можно только своей реализацией плашки
+ * через нативный модуль, и ради подписи это того не стоит.
+ */
+app.setAppUserModelId('io.keyframe.player')
 
 /**
  * Архитектура окон.
@@ -277,8 +289,6 @@ function createWindows(): void {
   hostWindow.on('resize', deferWindowState)
 
   hostWindow.on('focus', raiseOverlay)
-  hostWindow.on('focus', registerMediaKeys)
-  hostWindow.on('blur', unregisterMediaKeys)
   hostWindow.on('show', raiseOverlay)
   hostWindow.on('restore', raiseOverlay)
   // Свёрнутое окно не должно оставлять на экране висящий прозрачный оверлей
@@ -287,8 +297,9 @@ function createWindows(): void {
   hostWindow.on('closed', () => {
     savePosition()
     store?.flush()
-    unregisterMediaKeys()
     releasePowerBlocker()
+    thumbnailer?.dispose()
+    thumbnailer = null
     mpv?.stop()
     mpv = null
     hostWindow = null
@@ -303,8 +314,6 @@ function createWindows(): void {
     hostWindow!.show()
     raiseOverlay()
     updateThumbar()
-    // Окно стало активным без события focus: оно и так открылось поверх
-    registerMediaKeys()
     await startMpv()
   })
 }
@@ -393,33 +402,15 @@ function updateTaskbarProgress(): void {
   hostWindow.setProgressBar(rounded, { mode: rounded < 0 ? 'none' : paused ? 'paused' : 'normal' })
 }
 
-/**
- * Медиа-клавиши регистрируются только пока окно активно.
+/*
+ * Медиа-клавиши мы не перехватываем.
  *
- * Глобальный перехват отбирал бы их у Spotify и браузера всё время, пока
- * Keyframe открыт в фоне, — для плеера, который может стоять на паузе часами,
- * это недопустимо.
+ * Их обрабатывает системная плашка, которую регистрирует mpv (--media-controls):
+ * Windows сама решает, какому проигрывателю адресовать нажатие, и умеет это
+ * лучше нас. Своя регистрация через globalShortcut перехватывала бы клавиши
+ * раньше плашки — и отбирала бы их у браузера и Spotify всё время, пока
+ * Keyframe открыт в фоне.
  */
-function registerMediaKeys(): void {
-  const bind = (accelerator: string, action: () => void): void => {
-    try {
-      globalShortcut.register(accelerator, action)
-    } catch {
-      // Клавишу уже занял кто-то другой — не повод падать
-    }
-  }
-
-  bind('MediaPlayPause', () => void mpv?.command('cycle', 'pause'))
-  bind('MediaStop', () => void mpv?.setProperty('pause', true))
-  bind('MediaNextTrack', () => void mpv?.command('seek', 30, 'relative'))
-  bind('MediaPreviousTrack', () => void mpv?.command('seek', -30, 'relative'))
-}
-
-function unregisterMediaKeys(): void {
-  for (const key of ['MediaPlayPause', 'MediaStop', 'MediaNextTrack', 'MediaPreviousTrack']) {
-    globalShortcut.unregister(key)
-  }
-}
 
 // ---------- Позиция просмотра ----------
 
@@ -442,7 +433,7 @@ function savePosition(): void {
  * этому моменту уже знает длительность, и переход не виден как рывок.
  */
 async function resumeIfNeeded(): Promise<void> {
-  if (!mpv) return
+  if (!mpv || !settings().resumePlayback) return
 
   // Путь обычно приходит наблюдателем раньше события загрузки, но полагаться
   // на порядок незачем: он есть и в состоянии
@@ -545,10 +536,13 @@ async function startMpv(): Promise<void> {
     await mpv.setProperty('mute', desiredMute)
     audioRestored = true
 
+    await applySettingsToMpv(settings())
+
     overlayWindow?.webContents.send('mpv:ready')
 
     const autoOpen = fileToOpen(process.argv)
-    if (autoOpen) await mpv.loadFile(autoOpen)
+    if (autoOpen) await openPath(mpv, autoOpen, settings().fillPlaylistFromFolder)
+
   } catch (err) {
     dialog.showErrorBox('Keyframe', `Не удалось запустить движок воспроизведения:\n${String(err)}`)
   }
@@ -581,7 +575,7 @@ ipcMain.handle('mpv:restart', async () => {
 ipcMain.handle('mpv:screenshot', async () => {
   if (!mpv) return null
 
-  const dir = path.join(app.getPath('pictures'), 'Keyframe')
+  const dir = settings().screenshotDir || path.join(app.getPath('pictures'), 'Keyframe')
   fs.mkdirSync(dir, { recursive: true })
 
   const source = typeof mpv.state.filename === 'string' ? mpv.state.filename : 'keyframe'
@@ -600,6 +594,81 @@ ipcMain.handle('mpv:screenshot', async () => {
 
 ipcMain.handle('shell:showItem', (_e, target: string) => shell.showItemInFolder(target))
 
+// ---------- Превью кадра на таймлайне ----------
+
+let thumbnailer: Thumbnailer | null = null
+
+/**
+ * Кадр для подсказки под курсором.
+ *
+ * null здесь — нормальный ответ, а не ошибка: кадр может быть ещё не готов
+ * или недоступен вовсе, и интерфейс просто покажет подсказку без картинки.
+ */
+ipcMain.handle('thumbnail:at', async (_e, seconds: number) => {
+  if (!currentFile || !mpv) return null
+
+  // У сетевого потока перемотка стоит запроса к серверу — превью того не стоит
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(currentFile)) return null
+
+  const duration = Number(mpv.state.duration)
+  if (!Number.isFinite(duration) || duration <= 0) return null
+
+  if (!thumbnailer) thumbnailer = new Thumbnailer(mpvExecutablePath())
+  return thumbnailer.get(currentFile, seconds, duration)
+})
+
+// ---------- Настройки ----------
+
+function settings(): Settings {
+  return store?.settings ?? DEFAULT_SETTINGS
+}
+
+/**
+ * Настройки, которые живут в самом mpv. Применяются и при запуске движка, и
+ * сразу после изменения: ждать перезапуска ради размера субтитров незачем.
+ *
+ * Язык дорожек действует со следующего файла — у текущего дорожки выбраны
+ * ещё при загрузке, и менять их за спиной у зрителя мы не станем.
+ */
+async function applySettingsToMpv(next: Settings): Promise<void> {
+  if (!mpv) return
+  await mpv.setProperty('alang', next.audioLanguage).catch(() => undefined)
+  await mpv.setProperty('slang', next.subtitleLanguage).catch(() => undefined)
+  await mpv.setProperty('sub-font-size', next.subtitleFontSize).catch(() => undefined)
+}
+
+ipcMain.handle('settings:get', () => settings())
+
+ipcMain.handle('settings:set', async (_e, patch: Partial<Settings>) => {
+  const next = store?.updateSettings(patch) ?? DEFAULT_SETTINGS
+  await applySettingsToMpv(next)
+  overlayWindow?.webContents.send('settings:changed', next)
+  return next
+})
+
+/** Папка снимков: пользователь мог выбрать свою. */
+ipcMain.handle('settings:chooseScreenshotDir', async () => {
+  if (!hostWindow) return null
+  const { canceled, filePaths } = await dialog.showOpenDialog(hostWindow, {
+    title: 'Куда сохранять снимки кадров',
+    properties: ['openDirectory', 'createDirectory']
+  })
+  if (canceled || filePaths.length === 0) return null
+
+  const next = store?.updateSettings({ screenshotDir: filePaths[0] }) ?? DEFAULT_SETTINGS
+  overlayWindow?.webContents.send('settings:changed', next)
+  return filePaths[0]
+})
+
+/**
+ * Назначить Keyframe плеером по умолчанию из приложения Windows 10 и 11 не
+ * позволяют — это делает пользователь. Открываем ему нужную страницу
+ * параметров, чтобы не искать её вручную.
+ */
+ipcMain.handle('settings:openDefaultApps', () => {
+  void shell.openExternal('ms-settings:defaultapps')
+})
+
 ipcMain.handle('dialog:openFile', async () => {
   if (!hostWindow) return null
   const { canceled, filePaths } = await dialog.showOpenDialog(hostWindow, {
@@ -611,9 +680,25 @@ ipcMain.handle('dialog:openFile', async () => {
     ]
   })
   if (canceled || filePaths.length === 0) return null
-  await mpv?.loadFile(filePaths[0])
+  if (mpv) await openPath(mpv, filePaths[0], settings().fillPlaylistFromFolder)
   return filePaths[0]
 })
+
+/**
+ * Открыть перетащенное. Первый файл начинает играть, остальные встают в
+ * очередь: бросив на плеер несколько файлов, ждут именно этого.
+ */
+ipcMain.handle('playlist:open', async (_e, targets: string[]) => {
+  if (!mpv || targets.length === 0) return
+  const playable = targets.filter((target) => isMediaFile(target) || isPlaylistFile(target))
+  if (playable.length === 0) return
+
+  await openPath(mpv, playable[0], playable.length === 1 && settings().fillPlaylistFromFolder)
+  if (playable.length > 1) await appendPaths(mpv, playable.slice(1))
+})
+
+ipcMain.handle('playlist:remove', (_e, index: number) => mpv?.command('playlist-remove', index))
+ipcMain.handle('playlist:clear', () => mpv?.command('playlist-clear'))
 
 ipcMain.handle('dialog:openSubtitle', async () => {
   if (!hostWindow) return null
@@ -716,7 +801,7 @@ app.on('second-instance', (_e, argv) => {
   raiseOverlay()
 
   const file = fileToOpen(argv)
-  if (file) void mpv?.loadFile(file)
+  if (file && mpv) void openPath(mpv, file, settings().fillPlaylistFromFolder)
 })
 
 app.whenReady().then(() => {
@@ -733,8 +818,8 @@ app.whenReady().then(() => {
 })
 
 app.on('will-quit', () => {
-  globalShortcut.unregisterAll()
   releasePowerBlocker()
+  thumbnailer?.dispose()
   savePosition()
   store?.flush()
 })

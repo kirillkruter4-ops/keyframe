@@ -1,4 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { Settings } from '../shared/settings'
+
+export type { Settings }
 
 export interface WindowState {
   fullscreen: boolean
@@ -68,6 +71,10 @@ const api = {
 
     restart: () => ipcRenderer.invoke('mpv:restart'),
 
+    /** Кадр для подсказки на таймлайне; null — ещё не готов или недоступен. */
+    thumbnail: (seconds: number) =>
+      ipcRenderer.invoke('thumbnail:at', seconds) as Promise<string | null>,
+
     screenshot: () => ipcRenderer.invoke('mpv:screenshot') as Promise<string | null>
   },
 
@@ -89,6 +96,29 @@ const api = {
   version: () => ipcRenderer.invoke('app:version') as Promise<string>,
 
   openFile: () => ipcRenderer.invoke('dialog:openFile') as Promise<string | null>,
+
+  playlist: {
+    /** Открыть перетащенное: первый файл играет, остальные встают в очередь. */
+    open: (targets: string[]) => ipcRenderer.invoke('playlist:open', targets),
+    remove: (index: number) => ipcRenderer.invoke('playlist:remove', index),
+    clear: () => ipcRenderer.invoke('playlist:clear')
+  },
+
+  settings: {
+    get: () => ipcRenderer.invoke('settings:get') as Promise<Settings>,
+    set: (patch: Partial<Settings>) => ipcRenderer.invoke('settings:set', patch) as Promise<Settings>,
+    chooseScreenshotDir: () =>
+      ipcRenderer.invoke('settings:chooseScreenshotDir') as Promise<string | null>,
+    openDefaultApps: () => ipcRenderer.invoke('settings:openDefaultApps'),
+
+    onChange: (cb: (next: Settings) => void): (() => void) => {
+      const handler = (_e: unknown, next: Settings) => cb(next)
+      ipcRenderer.on('settings:changed', handler)
+      return () => {
+        ipcRenderer.off('settings:changed', handler)
+      }
+    }
+  },
 
   openSubtitle: () => ipcRenderer.invoke('dialog:openSubtitle') as Promise<string | null>,
 

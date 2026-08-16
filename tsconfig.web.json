@@ -16,5 +16,5 @@
     "isolatedModules": true,
     "noEmit": true
   },
-  "include": ["src/renderer/**/*", "src/preload/index.ts"]
+  "include": ["src/shared/**/*", "src/renderer/**/*", "src/preload/index.ts"]
 }

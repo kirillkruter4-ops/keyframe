@@ -1,6 +1,9 @@
 import { app } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
+import { DEFAULT_SETTINGS, type Settings } from '../shared/settings'
+
+export { DEFAULT_SETTINGS, type Settings }
 
 export interface WindowBounds {
   x: number
@@ -24,9 +27,16 @@ interface Data {
   muted: boolean
   window: WindowBounds | null
   resume: Record<string, ResumeEntry>
+  settings: Settings
 }
 
-const DEFAULTS: Data = { volume: 100, muted: false, window: null, resume: {} }
+const DEFAULTS: Data = {
+  volume: 100,
+  muted: false,
+  window: null,
+  resume: {},
+  settings: DEFAULT_SETTINGS
+}
 
 /** Больше — только лишний вес файла: столько фильмов подряд никто не бросает. */
 const RESUME_LIMIT = 200
@@ -64,12 +74,15 @@ export class Store {
         volume: typeof parsed.volume === 'number' ? parsed.volume : DEFAULTS.volume,
         muted: Boolean(parsed.muted),
         window: parsed.window ?? null,
-        resume: parsed.resume ?? {}
+        resume: parsed.resume ?? {},
+        // Настройка, которой в файле ещё нет, берётся из умолчаний: так
+        // новая версия читает файл старой без миграций
+        settings: { ...DEFAULT_SETTINGS, ...(parsed.settings ?? {}) }
       }
     } catch {
       // Файла нет или он испорчен — начинаем с чистого состояния,
       // это не повод мешать запуску
-      return { ...DEFAULTS, resume: {} }
+      return { ...DEFAULTS, resume: {}, settings: { ...DEFAULT_SETTINGS } }
     }
   }
 
@@ -107,6 +120,16 @@ export class Store {
     this.data.volume = volume
     this.data.muted = muted
     this.schedule()
+  }
+
+  get settings(): Settings {
+    return this.data.settings
+  }
+
+  updateSettings(patch: Partial<Settings>): Settings {
+    this.data.settings = { ...this.data.settings, ...patch }
+    this.schedule()
+    return this.data.settings
   }
 
   get window(): WindowBounds | null {

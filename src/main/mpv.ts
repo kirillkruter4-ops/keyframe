@@ -34,7 +34,11 @@ const OBSERVED = [
   'sub-delay',
   'audio-delay',
   'loop-file',
-  'video-aspect-override'
+  'loop-playlist',
+  'video-aspect-override',
+  'playlist',
+  'playlist-pos',
+  'playlist-count'
 ] as const
 
 export type MpvProperty = (typeof OBSERVED)[number]
@@ -67,40 +71,21 @@ export class Mpv extends EventEmitter {
   /** Последнее известное состояние — чтобы UI мог отрисоваться сразу при подключении. */
   readonly state: MpvState = {}
 
+  /**
+   * hwnd — окно, в которое рисовать. null означает экземпляр без вывода:
+   * такой нужен для превью кадров, где картинка забирается прямо у декодера
+   * и никуда не показывается.
+   */
   constructor(
     private readonly mpvExePath: string,
-    private readonly hwnd: string
+    private readonly hwnd: string | null
   ) {
     super()
     this.pipePath = `\\\\.\\pipe\\keyframe-mpv-${process.pid}-${randomBytes(4).toString('hex')}`
   }
 
   async start(): Promise<void> {
-    const args = [
-      `--wid=${this.hwnd}`,
-      `--input-ipc-server=${this.pipePath}`,
-
-      // Окно живёт всегда, даже без файла — иначе при старте нечего показывать
-      '--idle=yes',
-      '--force-window=yes',
-      '--keep-open=yes',
-
-      // Весь интерфейс рисуем сами: убираем встроенный OSC, OSD и обработку ввода
-      '--no-osc',
-      '--osd-level=0',
-      '--no-input-default-bindings',
-      '--input-vo-keyboard=no',
-      '--input-cursor=no',
-
-      // Вывод и аппаратное декодирование
-      '--vo=gpu-next',
-      '--gpu-api=d3d11',
-      '--hwdec=auto-safe',
-
-      // Без своего терминала; логи забираем через stderr
-      '--terminal=no',
-      '--msg-level=all=warn'
-    ]
+    const args = this.hwnd === null ? this.headlessArgs() : this.playerArgs()
 
     this.proc = spawn(this.mpvExePath, args, {
       windowsHide: true,
@@ -125,7 +110,69 @@ export class Mpv extends EventEmitter {
     this.proc.on('error', (err) => this.emit('error', err))
 
     await this.connect()
-    await this.observeAll()
+    if (this.hwnd !== null) await this.observeAll()
+  }
+
+  private playerArgs(): string[] {
+    return [
+      `--wid=${this.hwnd}`,
+      `--input-ipc-server=${this.pipePath}`,
+
+      // Окно живёт всегда, даже без файла — иначе при старте нечего показывать
+      '--idle=yes',
+      '--force-window=yes',
+      '--keep-open=yes',
+
+      // Весь интерфейс рисуем сами: убираем встроенный OSC, OSD и обработку ввода
+      '--no-osc',
+      '--osd-level=0',
+      '--no-input-default-bindings',
+      '--input-vo-keyboard=no',
+      '--input-cursor=no',
+
+      // Системная плашка Windows: заголовок, кнопки и медиа-клавиши.
+      // Её рисует сама Windows по данным mpv — своей реализации не нужно
+      '--media-controls=yes',
+
+      // Вывод и аппаратное декодирование
+      '--vo=gpu-next',
+      '--gpu-api=d3d11',
+      '--hwdec=auto-safe',
+
+      // Без своего терминала; логи забираем через stderr
+      '--terminal=no',
+      '--msg-level=all=warn'
+    ]
+  }
+
+  /**
+   * Экземпляр для превью кадров.
+   *
+   * Ни окна, ни звука, ни аппаратного декодера: декодировать нужно по одному
+   * кадру, а место на видеокарте пусть остаётся тому mpv, который показывает
+   * фильм. Кадр уменьшается фильтром до отрисовки, чтобы не гонять через диск
+   * полноразмерные JPEG.
+   */
+  private headlessArgs(): string[] {
+    return [
+      `--input-ipc-server=${this.pipePath}`,
+      '--idle=yes',
+      '--keep-open=yes',
+      '--pause=yes',
+      '--vo=null',
+      '--ao=null',
+      '--no-audio',
+      '--no-sub',
+      '--hwdec=no',
+      '--vf=scale=224:-2',
+      '--screenshot-format=jpg',
+      '--screenshot-jpeg-quality=75',
+      // Точный поиск здесь не нужен: превью показывает, что примерно в этом
+      // месте, а поиск по ключевым кадрам на порядок быстрее
+      '--hr-seek=no',
+      '--terminal=no',
+      '--msg-level=all=error'
+    ]
   }
 
   /**
