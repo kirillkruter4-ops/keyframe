@@ -31,10 +31,28 @@ jobs:
 
       - run: npm run typecheck
 
+      # Подпись делает сам electron-builder, когда в окружении есть сертификат.
+      # Секретов нет — сборка выходит неподписанной, как сейчас; появятся —
+      # начнёт подписываться без правок в этом файле.
       - name: Собрать и опубликовать
         run: npx electron-builder --win --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+
+      # Тихо неподписанный релиз опаснее явно неподписанного: если сертификат
+      # задан, а подписи нет, сборка должна упасть, а не уехать людям
+      - name: Проверить подпись
+        if: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem release/*-setup.exe | Select-Object -First 1
+          $signature = Get-AuthenticodeSignature $installer.FullName
+          Write-Host "Подпись: $($signature.Status) — $($signature.SignerCertificate.Subject)"
+          if ($signature.Status -ne 'Valid') {
+            throw "Установщик не подписан: $($signature.StatusMessage)"
+          }
 
       - uses: actions/upload-artifact@v4
         with:
