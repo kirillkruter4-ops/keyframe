@@ -1,17 +1,22 @@
 import { useLayoutEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import type { PlayerState, Track } from './usePlayer'
+import { useT } from './i18n'
 
 /**
  * Название дорожки. Язык и заголовок есть далеко не всегда, поэтому у
  * безымянной дорожки остаётся хотя бы её номер — выбирать вслепую между двумя
  * пустыми строками невозможно.
  */
-export function trackLabel(track: Track, index: number): string {
+export function trackLabel(
+  track: Track,
+  index: number,
+  t: (text: string) => string = (text) => text
+): string {
   const parts: string[] = []
   if (track.lang) parts.push(track.lang.toUpperCase())
   if (track.title) parts.push(track.title)
-  if (parts.length === 0) parts.push(`Дорожка ${index + 1}`)
-  if (track.external) parts.push('внешние')
+  if (parts.length === 0) parts.push(`${t('Дорожка')} ${index + 1}`)
+  if (track.external) parts.push(t('внешние'))
   return parts.join(' · ')
 }
 
@@ -37,6 +42,7 @@ export function Tracks({
   open: boolean
   onToggle: () => void
 }): JSX.Element | null {
+  const t = useT()
   const mpv = window.keyframe.mpv
 
   const audio = tracks.filter((track) => track.type === 'audio')
@@ -50,13 +56,13 @@ export function Tracks({
         <div className="tracks__panel" role="menu">
           {subs.length > 0 && (
             <>
-              <div className="tracks__title">Субтитры</div>
+              <div className="tracks__title">{t('Субтитры')}</div>
               <button
                 className="tracks__item"
                 data-selected={sid === false || !subVisible}
                 onClick={() => void mpv.set('sid', 'no')}
               >
-                Выключены
+                {t('Выключены')}
               </button>
               {subs.map((track, index) => (
                 <button
@@ -73,7 +79,7 @@ export function Tracks({
 
           {audio.length > 0 && (
             <>
-              <div className="tracks__title">Звук</div>
+              <div className="tracks__title">{t('Звук')}</div>
               {audio.map((track, index) => (
                 <button
                   key={track.id}
@@ -88,7 +94,7 @@ export function Tracks({
           )}
 
           <button className="tracks__add" onClick={() => void window.keyframe.openSubtitle()}>
-            Добавить субтитры из файла…
+            {t('Добавить субтитры из файла…')}
           </button>
         </div>
       )}
@@ -96,9 +102,9 @@ export function Tracks({
       <button
         className="control"
         onClick={onToggle}
-        aria-label="Дорожки и субтитры"
+        aria-label={t('Дорожки и субтитры')}
         aria-expanded={open}
-        title="Дорожки и субтитры"
+        title={t('Дорожки и субтитры')}
         data-active={open}
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
@@ -168,6 +174,7 @@ export function ContextMenu({
   actions: MenuActions
   onClose: () => void
 }): JSX.Element {
+  const t = useT()
   const mpv = window.keyframe.mpv
   const ref = useRef<HTMLDivElement>(null)
   const [box, setBox] = useState<{
@@ -234,17 +241,17 @@ export function ContextMenu({
       {hasFile && (
         <>
           <Item
-            label={player.paused ? 'Воспроизвести' : 'Пауза'}
+            label={player.paused ? t('Воспроизвести') : t('Пауза')}
             hint="Space"
             onClick={run(actions.togglePause)}
           />
-          <Item label="Назад 10 секунд" hint="J" onClick={run(() => actions.seekBy(-10))} />
-          <Item label="Вперёд 10 секунд" hint="L" onClick={run(() => actions.seekBy(10))} />
+          <Item label={t('Назад 10 секунд')} hint="J" onClick={run(() => actions.seekBy(-10))} />
+          <Item label={t('Вперёд 10 секунд')} hint="L" onClick={run(() => actions.seekBy(10))} />
           <Separator />
 
-          <Sub label="Субтитры" value={subs.length === 0 ? 'нет' : player.subVisible && player.sid !== false ? 'вкл' : 'выкл'}>
+          <Sub label={t('Субтитры')} value={subs.length === 0 ? t('нет') : player.subVisible && player.sid !== false ? t('вкл') : t('выкл')}>
             <Item
-              label="Выключены"
+              label={t('Выключены')}
               checked={!player.subVisible || player.sid === false}
               onClick={run(() => void mpv.set('sid', 'no'))}
             />
@@ -258,30 +265,30 @@ export function ContextMenu({
             ))}
             <Separator />
             <Item
-              label="Добавить из файла…"
+              label={t('Добавить из файла…')}
               onClick={run(() => void window.keyframe.openSubtitle())}
             />
             <Separator />
             <Item
-              label="Раньше на 0,1 с"
+              label={t('Раньше на 0,1 с')}
               hint="G"
               disabled={subs.length === 0}
               onClick={() => void mpv.set('sub-delay', round(player.subDelay - DELAY_STEP))}
             />
             <Item
-              label="Позже на 0,1 с"
+              label={t('Позже на 0,1 с')}
               hint="H"
               disabled={subs.length === 0}
               onClick={() => void mpv.set('sub-delay', round(player.subDelay + DELAY_STEP))}
             />
             <Item
-              label={`Сбросить задержку (${formatDelay(player.subDelay)})`}
+              label={`Сбросить задержку (${formatDelay(player.subDelay, t)})`}
               disabled={player.subDelay === 0}
               onClick={run(() => void mpv.set('sub-delay', 0))}
             />
           </Sub>
 
-          <Sub label="Звук" value={audio.length > 1 ? `${audio.length} дорожки` : undefined}>
+          <Sub label={t('Звук')} value={audio.length > 1 ? `${audio.length} дорожки` : undefined}>
             {audio.map((track, index) => (
               <Item
                 key={track.id}
@@ -291,28 +298,28 @@ export function ContextMenu({
               />
             ))}
             {audio.length > 0 && <Separator />}
-            <Item label="Без звука" hint="M" checked={player.muted} onClick={run(actions.toggleMute)} />
+            <Item label={t('Без звука')} hint="M" checked={player.muted} onClick={run(actions.toggleMute)} />
             <Separator />
             <Item
-              label="Раньше на 0,1 с"
+              label={t('Раньше на 0,1 с')}
               onClick={() => void mpv.set('audio-delay', round(player.audioDelay - DELAY_STEP))}
             />
             <Item
-              label="Позже на 0,1 с"
+              label={t('Позже на 0,1 с')}
               onClick={() => void mpv.set('audio-delay', round(player.audioDelay + DELAY_STEP))}
             />
             <Item
-              label={`Сбросить задержку (${formatDelay(player.audioDelay)})`}
+              label={`Сбросить задержку (${formatDelay(player.audioDelay, t)})`}
               disabled={player.audioDelay === 0}
               onClick={run(() => void mpv.set('audio-delay', 0))}
             />
           </Sub>
 
-          <Sub label="Видео">
+          <Sub label={t('Видео')}>
             {ASPECTS.map((aspect) => (
               <Item
                 key={aspect.label}
-                label={aspect.label}
+                label={t(aspect.label)}
                 checked={
                   aspect.value < 0 ? player.aspect <= 0 : Math.abs(player.aspect - aspect.value) < 0.01
                 }
@@ -320,15 +327,15 @@ export function ContextMenu({
               />
             ))}
             <Separator />
-            <Item label="Кадр назад" hint="," onClick={() => actions.frameStep(-1)} />
-            <Item label="Кадр вперёд" hint="." onClick={() => actions.frameStep(1)} />
+            <Item label={t('Кадр назад')} hint="," onClick={() => actions.frameStep(-1)} />
+            <Item label={t('Кадр вперёд')} hint="." onClick={() => actions.frameStep(1)} />
           </Sub>
 
-          <Sub label="Скорость" value={`${player.speed}×`}>
+          <Sub label={t('Скорость')} value={`${player.speed}×`}>
             {SPEEDS.map((speed) => (
               <Item
                 key={speed}
-                label={speed === 1 ? 'Обычная' : `${speed}×`}
+                label={speed === 1 ? t('Обычная') : `${speed}×`}
                 checked={Math.abs(player.speed - speed) < 0.01}
                 onClick={run(() => actions.setSpeed(speed))}
               />
@@ -336,30 +343,30 @@ export function ContextMenu({
           </Sub>
 
           <Sub
-            label="Список"
+            label={t('Список')}
             value={player.playlist.length > 1 ? `${player.playlistPos + 1} из ${player.playlist.length}` : undefined}
           >
             <Item
-              label="Следующий файл"
+              label={t('Следующий файл')}
               hint="N"
               disabled={player.playlistPos >= player.playlist.length - 1}
               onClick={run(() => void mpv.command('playlist-next', 'weak'))}
             />
             <Item
-              label="Предыдущий файл"
+              label={t('Предыдущий файл')}
               hint="P"
               disabled={player.playlistPos <= 0}
               onClick={run(() => void mpv.command('playlist-prev', 'weak'))}
             />
             <Separator />
-            <Item label="Показать список" onClick={run(actions.showPlaylist)} />
+            <Item label={t('Показать список')} onClick={run(actions.showPlaylist)} />
             <Item
-              label="Повторять список"
+              label={t('Повторять список')}
               checked={player.loopPlaylist}
               onClick={run(() => void mpv.set('loop-playlist', player.loopPlaylist ? 'no' : 'inf'))}
             />
             <Item
-              label="Очистить список"
+              label={t('Очистить список')}
               disabled={player.playlist.length < 2}
               onClick={run(() => void window.keyframe.playlist.clear())}
             />
@@ -367,7 +374,7 @@ export function ContextMenu({
 
           <Separator />
           <Item
-            label="Повторять файл"
+            label={t('Повторять файл')}
             checked={player.loop}
             onClick={run(() => void mpv.set('loop-file', player.loop ? 'no' : 'inf'))}
           />
@@ -375,32 +382,32 @@ export function ContextMenu({
       )}
 
       <Item
-        label="Поверх всех окон"
+        label={t('Поверх всех окон')}
         checked={alwaysOnTop}
         onClick={run(() => void window.keyframe.window.toggleAlwaysOnTop())}
       />
-      <Item label="Полный экран" hint="F" checked={fullscreen} onClick={run(actions.toggleFullscreen)} />
+      <Item label={t('Полный экран')} hint="F" checked={fullscreen} onClick={run(actions.toggleFullscreen)} />
 
       {hasFile && (
         <>
           <Separator />
-          <Item label="Нарезать видео…" hint="E" onClick={run(actions.openEditor)} />
-          <Item label="Снимок кадра" hint="S" onClick={run(actions.screenshot)} />
+          <Item label={t('Нарезать видео…')} hint="E" onClick={run(actions.openEditor)} />
+          <Item label={t('Снимок кадра')} hint="S" onClick={run(actions.screenshot)} />
           <Item
-            label="Показать в проводнике"
+            label={t('Показать в проводнике')}
             disabled={!player.path}
             onClick={run(() => {
               if (player.path) void window.keyframe.showItem(player.path)
             })}
           />
-          <Item label="Сведения о файле" hint="I" onClick={run(actions.showInfo)} />
+          <Item label={t('Сведения о файле')} hint="I" onClick={run(actions.showInfo)} />
         </>
       )}
 
       <Separator />
-      <Item label="Открыть файл…" hint="Ctrl+O" onClick={run(actions.openFile)} />
-      <Item label="Настройки" onClick={run(actions.showSettings)} />
-      <Item label="Выход" onClick={run(() => void window.keyframe.window.close())} />
+      <Item label={t('Открыть файл…')} hint="Ctrl+O" onClick={run(actions.openFile)} />
+      <Item label={t('Настройки')} onClick={run(actions.showSettings)} />
+      <Item label={t('Выход')} onClick={run(() => void window.keyframe.window.close())} />
     </div>
   )
 }
@@ -410,8 +417,10 @@ function round(value: number): number {
   return Math.round(value * 100) / 100
 }
 
-function formatDelay(value: number): string {
-  return `${value > 0 ? '+' : ''}${value.toFixed(1).replace('.', ',')} с`
+function formatDelay(value: number, t: (text: string) => string): string {
+  // Разделитель дробной части свой у каждого языка: 0,3 против 0.3
+  const number = value.toFixed(1).replace('.', t('DECIMAL_COMMA'))
+  return `${value > 0 ? '+' : ''}${number} ${t('с')}`
 }
 
 function Item({

@@ -22,6 +22,7 @@ import {
 } from '../../../shared/edit/operations'
 import { canRedo, canUndo, createHistory, push, redo, undo, type History } from '../../../shared/edit/history'
 import { edlUrl } from '../../../shared/edit/edl'
+import { useT } from '../i18n'
 
 /**
  * Состояние редактора и всё, что он делает с плеером.
@@ -113,6 +114,7 @@ function restore(source: string, duration: number, saved: { in: number; out: num
 }
 
 export function useEditor({ source, duration, startAt, onNotice }: EditorOptions): EditorApi {
+  const t = useT()
   const [history, setHistory] = useState<History<Project>>(() =>
     createHistory(createProject(source, duration))
   )
@@ -204,7 +206,7 @@ export function useEditor({ source, duration, startAt, onNotice }: EditorOptions
       if (next === project) return
 
       if (next.segments.length === 0) {
-        onNotice('Нельзя удалить всё: должен остаться хотя бы один кусок')
+        onNotice(t('Нельзя удалить всё: должен остаться хотя бы один кусок'))
         return
       }
 
@@ -289,7 +291,7 @@ export function useEditor({ source, duration, startAt, onNotice }: EditorOptions
     const next = splitAt(project, at)
 
     if (next === project || !point) {
-      onNotice('Здесь резать нечего: плейхед на стыке кусков')
+      onNotice(t('Здесь резать нечего: плейхед на стыке кусков'))
       return
     }
 
@@ -300,7 +302,7 @@ export function useEditor({ source, duration, startAt, onNotice }: EditorOptions
 
   const remove = useCallback(() => {
     if (selection.length === 0) {
-      onNotice('Сначала выберите кусок')
+      onNotice(t('Сначала выберите кусок'))
       return
     }
 
@@ -315,7 +317,7 @@ export function useEditor({ source, duration, startAt, onNotice }: EditorOptions
 
   const duplicate = useCallback(() => {
     if (selection.length === 0) {
-      onNotice('Сначала выберите кусок')
+      onNotice(t('Сначала выберите кусок'))
       return
     }
     apply(duplicateSegments(project, selection), playhead.current)
@@ -364,7 +366,7 @@ export function useEditor({ source, duration, startAt, onNotice }: EditorOptions
 
   const cutMarked = useCallback(() => {
     if (marks.in === null || marks.out === null) {
-      onNotice('Отметьте начало клавишей I и конец клавишей O')
+      onNotice(t('Отметьте начало клавишей I и конец клавишей O'))
       return
     }
 
@@ -375,7 +377,7 @@ export function useEditor({ source, duration, startAt, onNotice }: EditorOptions
 
   const keepMarked = useCallback(() => {
     if (marks.in === null || marks.out === null) {
-      onNotice('Отметьте начало клавишей I и конец клавишей O')
+      onNotice(t('Отметьте начало клавишей I и конец клавишей O'))
       return
     }
 

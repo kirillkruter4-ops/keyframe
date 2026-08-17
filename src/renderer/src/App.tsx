@@ -23,7 +23,7 @@ import {
 } from './usePlayer'
 import { ContextMenu, Tracks, trackLabel, type MenuActions } from './ContextMenu'
 import { PlaylistPanel, SettingsPanel } from './Settings'
-import { Timecode, Timeline } from './Timeline'
+import { Timecode, Timeline, hintSeek } from './Timeline'
 import { justDragged, useDragPanel } from './useDragPanel'
 import { Editor } from './editor/Editor'
 import { useCommands, type CommandActions } from './commands'
@@ -31,6 +31,7 @@ import { Palette } from './Palette'
 import { Shortcuts } from './Shortcuts'
 import { formatTime } from './format'
 import logoUrl from './assets/logo.svg'
+import { LangContext, translate, useT } from './i18n'
 
 /** Шаги скорости. Ниже 0.25 речь неразборчива, выше 3 — бессмысленна. */
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3]
@@ -48,6 +49,7 @@ const WHEEL_SURFACES = '.editor, .panel, .palette, .shortcuts, .menu, .tracks'
 const SUBTITLE_EXTENSIONS = /\.(srt|ass|ssa|sub|vtt|sup|idx|lrc)$/i
 
 export function App(): JSX.Element {
+
   const player = usePlayer()
   const startDrag = useWindowDrag()
   const { fullscreen, maximized, alwaysOnTop } = useWindowState()
@@ -58,6 +60,17 @@ export function App(): JSX.Element {
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null)
   const [settings, updateSettings] = useSettings()
 
+  /*
+   * App сам создаёт LangContext, поэтому внутри себя прочитать его не может —
+   * useT здесь вернул бы значение по умолчанию, и весь текст самого App
+   * (подсказки, сообщения, кнопки титлбара) остался бы русским при английском
+   * интерфейсе. Язык у нас уже есть: берём его из настроек напрямую.
+   */
+  const t = useCallback(
+    (text: string) => translate(settings.language, text),
+    [settings.language]
+  )
+
   /** Что открыто поверх видео: разом показываем только одно. */
   const [panel, setPanel] = useState<'info' | 'settings' | 'playlist' | null>(null)
 
@@ -65,6 +78,16 @@ export function App(): JSX.Element {
   const [palette, setPalette] = useState(false)
   const [shortcuts, setShortcuts] = useState(false)
   const [recent, setRecent] = useState<string[]>([])
+
+  /**
+   * Где на дорожке закончил редактор — долей от всего фильма.
+   *
+   * Пока mpv заново открывает исходный файл, он присылает нулевую позицию, и
+   * дорожка честно рисует ноль: полоса прыгает в начало и возвращается только
+   * тогда, когда пойдёт воспроизведение. Место мы знаем заранее, поэтому не
+   * гадаем по приходящим свойствам, а передаём его напрямую.
+   */
+  const [leftEditorRatio, setLeftEditorRatio] = useState<number | null>(null)
 
   /**
    * Открытый редактор. Хранится файлом и секундой, а не флагом: пока он открыт,
@@ -107,7 +130,20 @@ export function App(): JSX.Element {
 
   const seekBy = useCallback(
     (delta: number) => {
-      void mpv.command('seek', delta, 'relative')
+      /*
+       * Сначала двигаем интерфейс, потом просим движок.
+       *
+       * Ответа ждать нельзя: между нажатием и первым подтверждением от mpv
+       * лежит круг IPC и сам переход, и всё это время цифра с полосой стояли
+       * бы на месте — отклик воспринимается именно по ним, а не по картинке.
+       *
+       * exact: без него mpv останавливается на ближайшем ключевом кадре, и
+       * «+5 секунд» от 5:46 приводили то на 5:50, то на 5:51 — шаг переставал
+       * быть шагом. Заодно это значит, что показанная нами секунда и есть та,
+       * куда приедет движок, и поправлять её задним числом не придётся.
+       */
+      hintSeek(delta)
+      void mpv.command('seek', delta, 'relative+exact')
       showOsd({
         label: `${delta > 0 ? '+' : '−'}${Math.abs(delta)} с`,
         icon: delta > 0 ? 'forward' : 'back'
@@ -150,7 +186,7 @@ export function App(): JSX.Element {
     const next = !player.muted
     void mpv.set('mute', next)
     showOsd({
-      label: next ? 'Без звука' : `${Math.round(player.volume)}%`,
+      label: next ? t('Без звука') : `${Math.round(player.volume)}%`,
       meter: next ? 0 : player.volume,
       icon: next ? 'mute' : 'volume'
     })
@@ -171,7 +207,7 @@ export function App(): JSX.Element {
     if (!player.path || player.duration <= 0) return
 
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(player.path)) {
-      showNotice({ kind: 'error', text: 'Резать можно только файлы на диске, не потоки' })
+      showNotice({ kind: 'error', text: t('Резать можно только файлы на диске, не потоки') })
       return
     }
 
@@ -253,7 +289,7 @@ export function App(): JSX.Element {
   const frameStep = useCallback(
     (direction: number) => {
       void mpv.command(direction > 0 ? 'frame-step' : 'frame-back-step')
-      showOsd({ label: direction > 0 ? 'Кадр +1' : 'Кадр −1', icon: direction > 0 ? 'forward' : 'back' })
+      showOsd({ label: direction > 0 ? t('Кадр +1') : t('Кадр −1'), icon: direction > 0 ? 'forward' : 'back' })
     },
     [mpv, showOsd]
   )
@@ -261,20 +297,20 @@ export function App(): JSX.Element {
   const takeScreenshot = useCallback(async () => {
     const target = await window.keyframe.mpv.screenshot()
     if (!target) {
-      showNotice({ kind: 'error', text: 'Не удалось сохранить снимок кадра' })
+      showNotice({ kind: 'error', text: t('Не удалось сохранить снимок кадра') })
       return
     }
     showNotice({
       kind: 'info',
-      text: 'Снимок сохранён в «Изображения\\Keyframe»',
-      action: { label: 'Показать', run: () => void window.keyframe.showItem(target) }
+      text: t('Снимок сохранён в «Изображения\\Keyframe»'),
+      action: { label: t('Показать'), run: () => void window.keyframe.showItem(target) }
     })
   }, [showNotice])
 
   const toggleSubtitles = useCallback(() => {
     const next = !player.subVisible
     void mpv.set('sub-visibility', next)
-    showOsd({ label: next ? 'Субтитры вкл' : 'Субтитры выкл' })
+    showOsd({ label: next ? t('Субтитры вкл') : t('Субтитры выкл') })
   }, [mpv, player.subVisible, showOsd])
 
   // Ошибку открытия файл сам не показывает: без сообщения экран просто
@@ -298,8 +334,8 @@ export function App(): JSX.Element {
     if (!player.crashed) return
     showNotice({
       kind: 'error',
-      text: 'Движок воспроизведения упал',
-      action: { label: 'Перезапустить', run: () => void window.keyframe.mpv.restart() }
+      text: t('Движок воспроизведения упал'),
+      action: { label: t('Перезапустить'), run: () => void window.keyframe.mpv.restart() }
     })
   }, [player.crashed, showNotice])
 
@@ -545,7 +581,7 @@ export function App(): JSX.Element {
 
     if (hasFile && media.length === 0) {
       for (const subtitle of subtitles) void mpv.command('sub-add', subtitle, 'select')
-      showOsd({ label: subtitles.length > 1 ? `Субтитры: ${subtitles.length}` : 'Субтитры добавлены' })
+      showOsd({ label: subtitles.length > 1 ? `Субтитры: ${subtitles.length}` : t('Субтитры добавлены') })
       return
     }
 
@@ -607,7 +643,12 @@ export function App(): JSX.Element {
   // Выкрученный в ноль ползунок — это тоже «звука нет», иконка должна совпадать
   const silent = player.muted || volumeLevel < 1
 
+  /*
+   * Язык раздаётся контекстом, а не пропсом: панели обёрнуты в memo и на смену
+   * языка иначе не перерисовались бы — половина окна осталась бы на прежнем.
+   */
   return (
+    <LangContext.Provider value={settings.language}>
     <div
       className="overlay"
       data-idle={!chromeVisible}
@@ -662,7 +703,7 @@ export function App(): JSX.Element {
             <button
               className="titlebar__button"
               onClick={() => void window.keyframe.window.minimize()}
-              aria-label="Свернуть"
+              aria-label={t('Свернуть')}
             >
               <svg width="10" height="10" viewBox="0 0 10 10">
                 <path d="M0 5h10" stroke="currentColor" strokeWidth="1.2" />
@@ -671,7 +712,7 @@ export function App(): JSX.Element {
             <button
               className="titlebar__button"
               onClick={() => void window.keyframe.window.toggleMaximize()}
-              aria-label={fullscreen || maximized ? 'Восстановить' : 'Развернуть'}
+              aria-label={fullscreen || maximized ? t('Восстановить') : t('Развернуть')}
             >
               {fullscreen || maximized ? (
                 // Два смещённых квадрата — привычный для Windows знак «восстановить»
@@ -688,7 +729,7 @@ export function App(): JSX.Element {
             <button
               className="titlebar__button titlebar__button--close"
               onClick={() => void window.keyframe.window.close()}
-              aria-label="Закрыть"
+              aria-label={t('Закрыть')}
             >
               <svg width="10" height="10" viewBox="0 0 10 10">
                 <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1.2" />
@@ -699,10 +740,10 @@ export function App(): JSX.Element {
 
         {hasFile && !editing && (
           <div className="chrome">
-            <Timeline duration={player.duration} />
+            <Timeline duration={player.duration} expectedRatio={leftEditorRatio} />
 
             <div className="controls">
-              <button className="control" onClick={togglePause} aria-label={player.paused ? 'Играть' : 'Пауза'}>
+              <button className="control" onClick={togglePause} aria-label={player.paused ? t('Играть') : t('Пауза')}>
                 {player.paused ? (
                   <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                     <path d="M4 2.5l9 5.5-9 5.5z" />
@@ -721,8 +762,8 @@ export function App(): JSX.Element {
                     className="control"
                     onClick={() => void mpv.command('playlist-prev', 'weak')}
                     disabled={player.playlistPos <= 0}
-                    aria-label="Предыдущий файл"
-                    title="Предыдущий файл (P)"
+                    aria-label={t('Предыдущий файл')}
+                    title={t('Предыдущий файл (P)')}
                   >
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                       <path d="M13 3L7 8l6 5z" />
@@ -733,8 +774,8 @@ export function App(): JSX.Element {
                     className="control"
                     onClick={() => void mpv.command('playlist-next', 'weak')}
                     disabled={player.playlistPos >= player.playlist.length - 1}
-                    aria-label="Следующий файл"
-                    title="Следующий файл (N)"
+                    aria-label={t('Следующий файл')}
+                    title={t('Следующий файл (N)')}
                   >
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                       <path d="M3 3l6 5-6 5z" />
@@ -748,7 +789,7 @@ export function App(): JSX.Element {
                 <button
                   className="control"
                   onClick={toggleMute}
-                  aria-label={silent ? 'Включить звук' : 'Выключить звук'}
+                  aria-label={silent ? t('Включить звук') : t('Выключить звук')}
                 >
                   {silent ? (
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -778,7 +819,7 @@ export function App(): JSX.Element {
                   ref={volume.ref}
                   {...volume.handlers}
                   role="slider"
-                  aria-label="Громкость"
+                  aria-label={t('Громкость')}
                   aria-valuemin={0}
                   aria-valuemax={100}
                   aria-valuenow={Math.round(volumeLevel)}
@@ -797,8 +838,8 @@ export function App(): JSX.Element {
                 <button
                   className="control control--text tnum"
                   onClick={resetSpeed}
-                  aria-label="Вернуть обычную скорость"
-                  title="Обычная скорость"
+                  aria-label={t('Вернуть обычную скорость')}
+                  title={t('Обычная скорость')}
                 >
                   {player.speed}×
                 </button>
@@ -811,8 +852,8 @@ export function App(): JSX.Element {
                   className="control"
                   onClick={() => setPanel(panel === 'playlist' ? null : 'playlist')}
                   data-active={panel === 'playlist'}
-                  aria-label="Список воспроизведения"
-                  title="Список воспроизведения"
+                  aria-label={t('Список воспроизведения')}
+                  title={t('Список воспроизведения')}
                 >
                   <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
                     <path d="M2 4h9M2 8h9M2 12h6" strokeLinecap="round" />
@@ -833,8 +874,8 @@ export function App(): JSX.Element {
               <button
                 className="control"
                 onClick={() => void takeScreenshot()}
-                aria-label="Снимок кадра"
-                title="Снимок кадра (S)"
+                aria-label={t('Снимок кадра')}
+                title={t('Снимок кадра (S)')}
               >
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
                   <path d="M1.5 4.5h3l1-2h5l1 2h3v8h-13z" strokeLinejoin="round" />
@@ -842,7 +883,7 @@ export function App(): JSX.Element {
                 </svg>
               </button>
 
-              <button className="control" onClick={openFile} aria-label="Открыть файл">
+              <button className="control" onClick={openFile} aria-label={t('Открыть файл')}>
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
                   <path d="M1.5 4.5h5l1.5 2h6.5v7h-13z" strokeLinejoin="round" />
                 </svg>
@@ -851,7 +892,7 @@ export function App(): JSX.Element {
               <button
                 className="control"
                 onClick={toggleFullscreen}
-                aria-label={fullscreen ? 'Выйти из полного экрана' : 'Полный экран'}
+                aria-label={fullscreen ? t('Выйти из полного экрана') : t('Полный экран')}
               >
                 {fullscreen ? (
                   // Стрелки внутрь — «свернуть обратно»
@@ -886,7 +927,12 @@ export function App(): JSX.Element {
           duration={editing.duration}
           startAt={editing.startAt}
           hasAudio={player.tracks.some((track) => track.type === 'audio')}
-          onClose={() => setEditing(null)}
+          onClose={(leftAt) => {
+            // Делим на длительность исходника, известную с момента входа:
+            // player.duration сейчас ещё монтажная, от неё доля была бы чужой
+            setLeftEditorRatio(editing.duration > 0 ? leftAt / editing.duration : null)
+            setEditing(null)
+          }}
           onNotice={(text) => showNotice({ kind: 'info', text })}
         />
       )}
@@ -895,17 +941,18 @@ export function App(): JSX.Element {
         <div className="empty">
           <img className="empty__logo" src={logoUrl} alt="" />
           <div>
-            <div className="empty__title">Перетащите файл сюда</div>
+            <div className="empty__title">{t('Перетащите файл сюда')}</div>
             <div className="empty__hint">
-              или <kbd>Ctrl</kbd> + <kbd>O</kbd>, чтобы открыть
+              {t('или')} <kbd>Ctrl</kbd> + <kbd>O</kbd>{t(', чтобы открыть')}
             </div>
           </div>
           <button className="empty__button" onClick={openFile}>
-            Открыть файл
+            {t('Открыть файл')}
           </button>
         </div>
       )}
     </div>
+    </LangContext.Provider>
   )
 }
 
@@ -917,6 +964,7 @@ export function App(): JSX.Element {
  * каждого фильма постоянно.
  */
 function FileInfo({ player, onClose }: { player: PlayerState; onClose: () => void }): JSX.Element {
+  const t = useT()
   const audio = player.tracks.filter((track) => track.type === 'audio')
   const subs = player.tracks.filter((track) => track.type === 'sub')
   const activeAudio = audio.find((track) => track.id === player.aid)
@@ -932,32 +980,32 @@ function FileInfo({ player, onClose }: { player: PlayerState; onClose: () => voi
     >
       <div className="info__head" {...drag.handleProps}>
         <span className="info__name" title={player.path ?? undefined}>
-          {player.filename ?? 'Ничего не открыто'}
+          {player.filename ?? t('Ничего не открыто')}
         </span>
-        <button className="notice__close" onClick={onClose} aria-label="Закрыть">
+        <button className="notice__close" onClick={onClose} aria-label={t('Закрыть')}>
           <svg width="10" height="10" viewBox="0 0 10 10">
             <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1.2" />
           </svg>
         </button>
       </div>
 
-      <Row label="Длительность" value={formatTime(player.duration)} />
+      <Row label={t('Длительность')} value={formatTime(player.duration)} />
       <Row
-        label="Разрешение"
+        label={t('Разрешение')}
         value={player.videoWidth ? `${player.videoWidth}×${player.videoHeight}` : '—'}
       />
-      <Row label="Частота кадров" value={player.fps ? `${player.fps.toFixed(1)} к/с` : '—'} />
-      <Row label="Декодер" value={player.hwdec ?? '—'} tone={hwOk ? 'ok' : 'warn'} />
+      <Row label={t('Частота кадров')} value={player.fps ? `${player.fps.toFixed(1)} к/с` : '—'} />
+      <Row label={t('Декодер')} value={player.hwdec ?? '—'} tone={hwOk ? 'ok' : 'warn'} />
       <Row
-        label="Пропущено кадров"
+        label={t('Пропущено кадров')}
         value={String(player.frameDrops)}
         tone={player.frameDrops > 0 ? 'warn' : 'ok'}
       />
       <Row
-        label="Звук"
+        label={t('Звук')}
         value={activeAudio ? trackLabel(activeAudio, audio.indexOf(activeAudio)) : '—'}
       />
-      <Row label="Дорожек субтитров" value={String(subs.length)} />
+      <Row label={t('Дорожек субтитров')} value={String(subs.length)} />
     </div>
   )
 }
@@ -986,6 +1034,7 @@ function Row({
  * а иногда и ответить на неё кнопкой. Само гаснет только то, что не про ошибку.
  */
 function NoticeBar({ notice, onClose }: { notice: Notice; onClose: () => void }): JSX.Element {
+  const t = useT()
   return (
     <div className="notice" data-kind={notice.kind} key={notice.id}>
       <span className="notice__text">{notice.text}</span>
@@ -1000,7 +1049,7 @@ function NoticeBar({ notice, onClose }: { notice: Notice; onClose: () => void })
           {notice.action.label}
         </button>
       )}
-      <button className="notice__close" onClick={onClose} aria-label="Закрыть">
+      <button className="notice__close" onClick={onClose} aria-label={t('Закрыть')}>
         <svg width="10" height="10" viewBox="0 0 10 10">
           <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1.2" />
         </svg>
@@ -1017,6 +1066,7 @@ function NoticeBar({ notice, onClose }: { notice: Notice; onClose: () => void })
  * фоном под чужой фильм нельзя.
  */
 function UpdateBanner({ status }: { status: UpdateStatus }): JSX.Element | null {
+  const t = useT()
   const api = window.keyframe.update
 
   if (status.state === 'idle' || status.state === 'checking' || status.state === 'error') return null
@@ -1026,10 +1076,10 @@ function UpdateBanner({ status }: { status: UpdateStatus }): JSX.Element | null 
       {status.state === 'available' && (
         <>
           <span className="update__text">
-            Доступна версия <b>{status.version}</b>
+            {t('Доступна версия')} <b>{status.version}</b>
           </span>
           <button className="update__button" onClick={() => void api.download()}>
-            Обновить
+            {t('Обновить')}
           </button>
         </>
       )}
@@ -1046,10 +1096,10 @@ function UpdateBanner({ status }: { status: UpdateStatus }): JSX.Element | null 
       {status.state === 'ready' && (
         <>
           <span className="update__text">
-            Версия <b>{status.version}</b> готова
+            {t('Версия')} <b>{status.version}</b> {t('готова')}
           </span>
           <button className="update__button" onClick={() => void api.install()}>
-            Перезапустить
+            {t('Перезапустить')}
           </button>
         </>
       )}

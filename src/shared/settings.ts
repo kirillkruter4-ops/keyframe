@@ -17,6 +17,8 @@ export interface Settings {
   subtitleFontSize: number
   /** Папка для снимков; пусто — «Изображения/Keyframe» */
   screenshotDir: string
+  /** Язык интерфейса. Русский — исходный, английский берётся из словаря */
+  language: 'ru' | 'en'
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -26,5 +28,6 @@ export const DEFAULT_SETTINGS: Settings = {
   audioLanguage: '',
   subtitleLanguage: '',
   subtitleFontSize: 55,
-  screenshotDir: ''
+  screenshotDir: '',
+  language: 'ru'
 }

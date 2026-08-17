@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { fuzzy, rank } from '../../shared/fuzzy'
 import type { Command } from './commands'
+import { useT } from './i18n'
 
 /**
  * Палитра команд — единственная точка входа во всё.
@@ -35,6 +36,7 @@ function baseName(path: string): string {
 }
 
 export function Palette({ commands, recent, onOpenFile, onClose }: PaletteProps): JSX.Element {
+  const t = useT()
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
   const listRef = useRef<HTMLDivElement | null>(null)
@@ -55,12 +57,12 @@ export function Palette({ commands, recent, onOpenFile, onClose }: PaletteProps)
       key: `r:${path}`,
       label: baseName(path),
       hint: '',
-      group: 'Недавние',
+      group: t('Недавние'),
       run: () => onOpenFile(path)
     }))
 
     return [...fromCommands, ...fromRecent]
-  }, [commands, recent, onOpenFile])
+  }, [commands, recent, onOpenFile, t])
 
   const found = useMemo(
     () => rank(query, entries, (entry) => `${entry.label} ${entry.hint}`).slice(0, 60),
@@ -140,13 +142,13 @@ export function Palette({ commands, recent, onOpenFile, onClose }: PaletteProps)
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Команда или недавний файл"
+          placeholder={t('Команда или недавний файл')}
           spellCheck={false}
           autoFocus
         />
 
         <div className="palette__list" ref={listRef}>
-          {found.length === 0 && <div className="palette__empty">Ничего не нашлось</div>}
+          {found.length === 0 && <div className="palette__empty">{t('Ничего не нашлось')}</div>}
 
           {found.map((entry, index) => (
             <button

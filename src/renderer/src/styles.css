@@ -601,6 +601,12 @@ kbd {
   position: absolute;
   right: 16px;
   bottom: 16px;
+  /*
+   * Выше панелей и меню (9 и 10), но ниже палитры (40). Своего z-index у плашки
+   * не было вовсе, и она уходила под любую открытую панель: предложение
+   * обновиться висело за настройками, и нажать на него было нельзя.
+   */
+  z-index: 20;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1662,4 +1668,30 @@ kbd {
 .shortcuts__label {
   font-size: 12px;
   color: var(--text-lo);
+}
+
+/*
+ * Перетаскиваемая строка списка. Поднята над остальными и не ловит мышь сама:
+ * иначе она перехватывала бы наведение у строк, над которыми проезжает.
+ */
+.playlist__row[data-dragging='true'] {
+  position: relative;
+  z-index: 2;
+  background: var(--bg-raised);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
+  cursor: grabbing;
+}
+
+/* Соседи расступаются на высоту строки — видно, куда встанет перетаскиваемая */
+.playlist__row[data-shift='up'] {
+  transform: translateY(-100%);
+}
+
+.playlist__row[data-shift='down'] {
+  transform: translateY(100%);
+}
+
+.playlist__row[data-shift] {
+  transition: transform var(--dur-fast) var(--ease);
 }

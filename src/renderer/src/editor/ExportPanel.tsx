@@ -8,6 +8,7 @@ import {
   type Quality
 } from '../../../shared/edit/export'
 import { formatTime } from '../format'
+import { useT } from '../i18n'
 
 /** Понятные названия кодировщиков: h264_nvenc пользователю ничего не говорит. */
 const ENCODER_LABEL: Record<Encoder, string> = {
@@ -56,6 +57,7 @@ export function ExportPanel({
   onReplaced,
   onNotice
 }: ExportPanelProps): JSX.Element {
+  const t = useT()
   const [destination, setDestination] = useState<Destination>('new')
   const [mode, setMode] = useState<ExportMode>('copy')
   const [quality, setQuality] = useState<Quality>('balanced')
@@ -105,7 +107,7 @@ export function ExportPanel({
     progress.state === 'downloading' ||
     progress.state === 'running'
 
-  const name = source.split(/[\\/]/).pop() ?? 'видео'
+  const name = source.split(/[\\/]/).pop() ?? 'video'
 
   const start = async (): Promise<void> => {
     const request = {
@@ -128,7 +130,7 @@ export function ExportPanel({
     // Записывать поверх исходника через диалог тоже можно — но это уже замена,
     // и делать её надо тем же безопасным путём, а не ffmpeg поверх открытого файла
     if (target.toLowerCase() === source.toLowerCase()) {
-      onNotice('Чтобы записать поверх исходного файла, выберите «Заменить исходный»')
+      onNotice(t('Чтобы записать поверх исходного файла, выберите «Заменить исходный»'))
       return
     }
 
@@ -138,11 +140,11 @@ export function ExportPanel({
   return (
     <div className="export" onPointerDown={(event) => event.stopPropagation()}>
       <div className="export__head">
-        <span className="export__title">Сохранить нарезку</span>
+        <span className="export__title">{t('Сохранить нарезку')}</span>
         <span className="export__facts tnum">
-          {segments.length} {plural(segments.length)} · {formatTime(length)}
+          {segments.length} {plural(segments.length, t)} · {formatTime(length)}
         </span>
-        <button className="export__x" onClick={onClose} aria-label="Закрыть">
+        <button className="export__x" onClick={onClose} aria-label={t('Закрыть')}>
           <svg width="10" height="10" viewBox="0 0 10 10">
             <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1.3" />
           </svg>
@@ -150,14 +152,14 @@ export function ExportPanel({
       </div>
 
       <div className="export__body">
-        <Field label="Куда">
+        <Field label={t('Куда')}>
           <Segmented
             value={destination}
             disabled={busy}
             onChange={setDestination}
             options={[
-              { value: 'new', label: 'Новый файл' },
-              { value: 'replace', label: 'Заменить исходный' }
+              { value: 'new', label: t('Новый файл') },
+              { value: 'replace', label: t('Заменить исходный') }
             ]}
           />
         </Field>
@@ -173,14 +175,14 @@ export function ExportPanel({
           )}
         </p>
 
-        <Field label="Как">
+        <Field label={t('Как')}>
           <Segmented
             value={mode}
             disabled={busy}
             onChange={setMode}
             options={[
-              { value: 'copy', label: 'Быстро' },
-              { value: 'encode', label: 'Точно' }
+              { value: 'copy', label: t('Быстро') },
+              { value: 'encode', label: t('Точно') }
             ]}
           />
         </Field>
@@ -191,40 +193,40 @@ export function ExportPanel({
               Без перекодирования: секунды на файл любой длины, качество исходника не меняется.{' '}
               {drift > 0.05
                 ? `Резы уедут назад до ${drift.toFixed(1).replace('.', ',')} с — ближе ключевых кадров нет.`
-                : 'Резать можно только по ключевым кадрам.'}
+                : t('Резать можно только по ключевым кадрам.')}
             </>
           ) : (
-            <>Режет ровно там, где показано. На видеокарте — в разы быстрее просмотра.</>
+            <>{t('Режет ровно там, где показано. На видеокарте — в разы быстрее просмотра.')}</>
           )}
         </p>
 
         {mode === 'copy' && drift > 0.05 && (
           <button className="export__align" onClick={onAlign} disabled={busy}>
-            Перенести резы на ключевые кадры, чтобы превью совпало с файлом
+            {t('Перенести резы на ключевые кадры, чтобы превью совпало с файлом')}
           </button>
         )}
 
         {mode === 'encode' && (
           <div className="export__row">
-            <Field label="Кодек">
+            <Field label={t('Кодек')}>
               <select
                 value={encoder}
                 onChange={(event) => setEncoder(event.target.value as Encoder)}
                 disabled={busy || encoders.length === 0}
               >
                 {encoders.length === 0 ? (
-                  <option>Определится после загрузки ffmpeg</option>
+                  <option>{t('Определится после загрузки ffmpeg')}</option>
                 ) : (
                   encoders.map((item) => (
                     <option key={item} value={item}>
-                      {ENCODER_LABEL[item]}
+                      {t(ENCODER_LABEL[item])}
                     </option>
                   ))
                 )}
               </select>
             </Field>
 
-            <Field label="Качество">
+            <Field label={t('Качество')}>
               <select
                 value={quality}
                 onChange={(event) => setQuality(event.target.value as Quality)}
@@ -232,7 +234,7 @@ export function ExportPanel({
               >
                 {(['high', 'balanced', 'small'] as Quality[]).map((item) => (
                   <option key={item} value={item}>
-                    {QUALITY_LABEL[item]}
+                    {t(QUALITY_LABEL[item])}
                   </option>
                 ))}
               </select>
@@ -240,21 +242,21 @@ export function ExportPanel({
           </div>
         )}
 
-        <Status progress={progress} />
+        <Status progress={progress} t={t} />
       </div>
 
       <div className="export__actions">
         {busy ? (
           <button className="export__cancel" onClick={() => void api.cancel()}>
-            Отменить
+            {t('Отменить')}
           </button>
         ) : (
           <>
             <button className="export__cancel" onClick={onClose}>
-              Закрыть
+              {t('Закрыть')}
             </button>
             <button className="editor__save" onClick={() => void start()}>
-              {destination === 'replace' ? 'Заменить файл' : 'Выбрать файл…'}
+              {destination === 'replace' ? t('Заменить файл') : t('Выбрать файл…')}
             </button>
           </>
         )}
@@ -263,18 +265,18 @@ export function ExportPanel({
   )
 }
 
-function plural(count: number): string {
+function plural(count: number, t: (text: string) => string): string {
   const tens = count % 100
   const ones = count % 10
-  if (tens > 10 && tens < 20) return 'кусков'
-  if (ones === 1) return 'кусок'
-  if (ones >= 2 && ones <= 4) return 'куска'
-  return 'кусков'
+  if (tens > 10 && tens < 20) return t('кусков')
+  if (ones === 1) return t('кусок')
+  if (ones >= 2 && ones <= 4) return t('куска')
+  return t('кусков')
 }
 
 /** Имя по умолчанию — то же правило, что и в главном процессе. */
 function suggestedName(source: string, keepContainer: boolean): string {
-  const name = source.split(/[\\/]/).pop() ?? 'видео'
+  const name = source.split(/[\\/]/).pop() ?? 'video'
   const dot = name.lastIndexOf('.')
   const base = dot > 0 ? name.slice(0, dot) : name
   const extension = keepContainer && dot > 0 ? name.slice(dot) : '.mp4'
@@ -324,19 +326,25 @@ function Segmented<T extends string>({
   )
 }
 
-function Status({ progress }: { progress: ExportProgress }): JSX.Element | null {
+function Status({
+  progress,
+  t
+}: {
+  progress: ExportProgress
+  t: (text: string) => string
+}): JSX.Element | null {
   switch (progress.state) {
     case 'idle':
       return null
 
     case 'preparing':
-      return <div className="export__status">Готовлю…</div>
+      return <div className="export__status">{t('Готовлю…')}</div>
 
     case 'downloading':
       return (
         <div className="export__status">
           <div>
-            Первый раз нужно скачать ffmpeg — около 45 МБ.{' '}
+            {t('Первый раз нужно скачать ffmpeg — около 165 МБ.')}{' '}
             <span className="tnum">{progress.percent}%</span>
           </div>
           <Bar percent={progress.percent} />
@@ -357,18 +365,18 @@ function Status({ progress }: { progress: ExportProgress }): JSX.Element | null 
     case 'done':
       return (
         <div className="export__status export__status--ok">
-          <span>{progress.replaced ? 'Файл заменён' : 'Готово'}</span>
+          <span>{progress.replaced ? t('Файл заменён') : t('Готово')}</span>
           <button
             className="export__reveal"
             onClick={() => void window.keyframe.editor.reveal(progress.target)}
           >
-            Показать в проводнике
+            {t('Показать в проводнике')}
           </button>
         </div>
       )
 
     case 'cancelled':
-      return <div className="export__status">Сохранение отменено</div>
+      return <div className="export__status">{t('Сохранение отменено')}</div>
 
     case 'error':
       return <div className="export__status export__status--error">{progress.message}</div>

@@ -18,6 +18,7 @@ import { Store, DEFAULT_SETTINGS, type Settings } from './store'
 import { appendPaths, isMediaFile, isPlaylistFile, openPath } from './playlist'
 import { Thumbnailer } from './thumbnailer'
 import { setupEditor } from './editor'
+import { dialogsOpen, showOnlyDialog } from './dialogs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
@@ -162,6 +163,11 @@ function deferWindowState(): void {
  */
 function raiseOverlay(): void {
   if (!overlayWindow || overlayWindow.isDestroyed()) return
+
+  // Пока висит системный диалог, оверлей наверх не поднимаем: он закроет собой
+  // модальное окно, а хозяин на это время выключен Windows, и приложение
+  // выглядит намертво зависшим — кликать некуда, свернуть нельзя
+  if (dialogsOpen()) return
   syncOverlayBounds()
   if (!overlayWindow.isVisible()) overlayWindow.showInactive()
   overlayWindow.moveTop()
@@ -745,10 +751,14 @@ ipcMain.handle('settings:set', async (_e, patch: Partial<Settings>) => {
 /** Папка снимков: пользователь мог выбрать свою. */
 ipcMain.handle('settings:chooseScreenshotDir', async () => {
   if (!hostWindow) return null
-  const { canceled, filePaths } = await dialog.showOpenDialog(hostWindow, {
-    title: 'Куда сохранять снимки кадров',
-    properties: ['openDirectory', 'createDirectory']
-  })
+  const { canceled, filePaths } = await showOnlyDialog(
+    () =>
+      dialog.showOpenDialog(hostWindow!, {
+        title: 'Куда сохранять снимки кадров',
+        properties: ['openDirectory', 'createDirectory']
+      }),
+    { canceled: true, filePaths: [] as string[] }
+  )
   if (canceled || filePaths.length === 0) return null
 
   const next = store?.updateSettings({ screenshotDir: filePaths[0] }) ?? DEFAULT_SETTINGS
@@ -767,14 +777,18 @@ ipcMain.handle('settings:openDefaultApps', () => {
 
 ipcMain.handle('dialog:openFile', async () => {
   if (!hostWindow) return null
-  const { canceled, filePaths } = await dialog.showOpenDialog(hostWindow, {
-    title: 'Открыть медиафайл',
-    properties: ['openFile'],
-    filters: [
-      { name: 'Медиафайлы', extensions: ['mkv', 'mp4', 'avi', 'mov', 'webm', 'flv', 'ts', 'm2ts', 'mp3', 'flac', 'aac', 'opus', 'wav', 'ogg'] },
-      { name: 'Все файлы', extensions: ['*'] }
-    ]
-  })
+  const { canceled, filePaths } = await showOnlyDialog(
+    () =>
+      dialog.showOpenDialog(hostWindow!, {
+        title: 'Открыть медиафайл',
+        properties: ['openFile'],
+        filters: [
+          { name: 'Медиафайлы', extensions: ['mkv', 'mp4', 'avi', 'mov', 'webm', 'flv', 'ts', 'm2ts', 'mp3', 'flac', 'aac', 'opus', 'wav', 'ogg'] },
+          { name: 'Все файлы', extensions: ['*'] }
+        ]
+      }),
+    { canceled: true, filePaths: [] as string[] }
+  )
   if (canceled || filePaths.length === 0) return null
   if (mpv) await openPath(mpv, filePaths[0], settings().fillPlaylistFromFolder)
   return filePaths[0]
@@ -816,16 +830,31 @@ ipcMain.handle('recent:list', () => {
 ipcMain.handle('playlist:remove', (_e, index: number) => mpv?.command('playlist-remove', index))
 ipcMain.handle('playlist:clear', () => mpv?.command('playlist-clear'))
 
+/**
+ * Переставить файл в списке.
+ *
+ * `to` — место вставки, а не итоговый индекс: mpv понимает playlist-move именно
+ * так («поставить перед этим»), и любой пересчёт на нашей стороне разошёлся бы
+ * с ним ровно на единицу при движении вниз.
+ */
+ipcMain.handle('playlist:move', (_e, from: number, to: number) =>
+  mpv?.command('playlist-move', from, to)
+)
+
 ipcMain.handle('dialog:openSubtitle', async () => {
   if (!hostWindow) return null
-  const { canceled, filePaths } = await dialog.showOpenDialog(hostWindow, {
-    title: 'Выбрать файл субтитров',
-    properties: ['openFile'],
-    filters: [
-      { name: 'Субтитры', extensions: ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'idx'] },
-      { name: 'Все файлы', extensions: ['*'] }
-    ]
-  })
+  const { canceled, filePaths } = await showOnlyDialog(
+    () =>
+      dialog.showOpenDialog(hostWindow!, {
+        title: 'Выбрать файл субтитров',
+        properties: ['openFile'],
+        filters: [
+          { name: 'Субтитры', extensions: ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'idx'] },
+          { name: 'Все файлы', extensions: ['*'] }
+        ]
+      }),
+    { canceled: true, filePaths: [] as string[] }
+  )
   if (canceled || filePaths.length === 0) return null
   // select, а не auto: файл выбрали руками, значит хотят видеть его прямо сейчас
   await mpv?.command('sub-add', filePaths[0], 'select')

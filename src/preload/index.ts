@@ -105,7 +105,10 @@ const api = {
 
     /** Недавно открытое: история для палитры. Уже несуществующие пути отсеяны. */
     recent: () => ipcRenderer.invoke('recent:list') as Promise<string[]>,
-    clear: () => ipcRenderer.invoke('playlist:clear')
+    clear: () => ipcRenderer.invoke('playlist:clear'),
+
+    /** `to` — куда вставить, от 0 до длины списка включительно */
+    move: (from: number, to: number) => ipcRenderer.invoke('playlist:move', from, to)
   },
 
   settings: {

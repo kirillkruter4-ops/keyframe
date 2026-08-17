@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import type { PlayerState } from './usePlayer'
+import { useT } from './i18n'
 
 /**
  * Реестр команд — единственный список того, что приложение умеет.
@@ -55,6 +56,7 @@ export function useCommands(
   window: { fullscreen: boolean; alwaysOnTop: boolean },
   actions: CommandActions
 ): Command[] {
+  const t = useT()
   const hasFile = player.filename !== null
   const list = player.playlist.length > 1
 
@@ -62,88 +64,88 @@ export function useCommands(
     () => [
       {
         id: 'play',
-        group: 'Воспроизведение',
-        label: player.paused ? 'Играть' : 'Пауза',
+        group: t('Воспроизведение'),
+        label: player.paused ? t('Играть') : t('Пауза'),
         keys: 'Space',
         run: actions.togglePause,
         hidden: !hasFile
       },
       {
         id: 'forward',
-        group: 'Воспроизведение',
-        label: 'Вперёд на 5 секунд',
+        group: t('Воспроизведение'),
+        label: t('Вперёд на 5 секунд'),
         keys: '→',
         run: () => actions.seekBy(5),
         hidden: !hasFile
       },
       {
         id: 'back',
-        group: 'Воспроизведение',
-        label: 'Назад на 5 секунд',
+        group: t('Воспроизведение'),
+        label: t('Назад на 5 секунд'),
         keys: '←',
         run: () => actions.seekBy(-5),
         hidden: !hasFile
       },
       {
         id: 'forward-long',
-        group: 'Воспроизведение',
-        label: 'Вперёд на 10 секунд',
+        group: t('Воспроизведение'),
+        label: t('Вперёд на 10 секунд'),
         keys: 'L',
         run: () => actions.seekBy(10),
         hidden: !hasFile
       },
       {
         id: 'back-long',
-        group: 'Воспроизведение',
-        label: 'Назад на 10 секунд',
+        group: t('Воспроизведение'),
+        label: t('Назад на 10 секунд'),
         keys: 'J',
         run: () => actions.seekBy(-10),
         hidden: !hasFile
       },
       {
         id: 'frame-next',
-        group: 'Воспроизведение',
-        label: 'Следующий кадр',
+        group: t('Воспроизведение'),
+        label: t('Следующий кадр'),
         keys: '.',
         run: () => actions.frameStep(1),
         hidden: !hasFile
       },
       {
         id: 'frame-prev',
-        group: 'Воспроизведение',
-        label: 'Предыдущий кадр',
+        group: t('Воспроизведение'),
+        label: t('Предыдущий кадр'),
         keys: ',',
         run: () => actions.frameStep(-1),
         hidden: !hasFile
       },
       {
         id: 'speed-up',
-        group: 'Воспроизведение',
-        label: 'Быстрее',
+        group: t('Воспроизведение'),
+        label: t('Быстрее'),
         keys: ']',
         run: () => actions.changeSpeed(1),
         hidden: !hasFile
       },
       {
         id: 'speed-down',
-        group: 'Воспроизведение',
-        label: 'Медленнее',
+        group: t('Воспроизведение'),
+        label: t('Медленнее'),
         keys: '[',
         run: () => actions.changeSpeed(-1),
         hidden: !hasFile
       },
       {
         id: 'speed-reset',
-        group: 'Воспроизведение',
-        label: 'Обычная скорость',
+        group: t('Воспроизведение'),
+        label: t('Обычная скорость'),
         keys: 'Backspace',
         run: actions.resetSpeed,
         hidden: !hasFile || player.speed === 1
       },
       {
         id: 'loop',
-        group: 'Воспроизведение',
-        label: 'Повторять файл',
+        group: t('Воспроизведение'),
+        label: t('Повторять файл'),
         run: actions.toggleLoop,
         checked: player.loop,
         hidden: !hasFile
@@ -151,24 +153,24 @@ export function useCommands(
 
       {
         id: 'volume-up',
-        group: 'Звук',
-        label: 'Громче',
+        group: t('Звук'),
+        label: t('Громче'),
         keys: '↑',
         run: () => actions.adjustVolume(5),
         hidden: !hasFile
       },
       {
         id: 'volume-down',
-        group: 'Звук',
-        label: 'Тише',
+        group: t('Звук'),
+        label: t('Тише'),
         keys: '↓',
         run: () => actions.adjustVolume(-5),
         hidden: !hasFile
       },
       {
         id: 'mute',
-        group: 'Звук',
-        label: 'Без звука',
+        group: t('Звук'),
+        label: t('Без звука'),
         keys: 'M',
         run: actions.toggleMute,
         checked: player.muted,
@@ -177,8 +179,8 @@ export function useCommands(
 
       {
         id: 'subtitles',
-        group: 'Субтитры',
-        label: 'Показывать субтитры',
+        group: t('Субтитры'),
+        label: t('Показывать субтитры'),
         keys: 'V',
         run: actions.toggleSubtitles,
         checked: player.subVisible,
@@ -186,40 +188,40 @@ export function useCommands(
       },
       {
         id: 'sub-earlier',
-        group: 'Субтитры',
-        label: 'Субтитры раньше на 0,1 с',
+        group: t('Субтитры'),
+        label: t('Субтитры раньше на 0,1 с'),
         keys: 'G',
         run: () => actions.adjustSubDelay(-0.1),
         hidden: !hasFile
       },
       {
         id: 'sub-later',
-        group: 'Субтитры',
-        label: 'Субтитры позже на 0,1 с',
+        group: t('Субтитры'),
+        label: t('Субтитры позже на 0,1 с'),
         keys: 'H',
         run: () => actions.adjustSubDelay(0.1),
         hidden: !hasFile
       },
       {
         id: 'sub-open',
-        group: 'Субтитры',
-        label: 'Подключить файл субтитров…',
+        group: t('Субтитры'),
+        label: t('Подключить файл субтитров…'),
         run: actions.openSubtitle,
         hidden: !hasFile
       },
 
       {
         id: 'editor',
-        group: 'Нарезка',
-        label: 'Нарезать видео',
+        group: t('Нарезка'),
+        label: t('Нарезать видео'),
         keys: 'E',
         run: actions.openEditor,
         hidden: !hasFile
       },
       {
         id: 'screenshot',
-        group: 'Нарезка',
-        label: 'Снимок кадра',
+        group: t('Нарезка'),
+        label: t('Снимок кадра'),
         keys: 'S',
         run: actions.screenshot,
         hidden: !hasFile
@@ -227,88 +229,89 @@ export function useCommands(
 
       {
         id: 'next',
-        group: 'Список',
-        label: 'Следующий файл',
+        group: t('Список'),
+        label: t('Следующий файл'),
         keys: 'N',
         run: actions.nextFile,
         hidden: !list
       },
       {
         id: 'prev',
-        group: 'Список',
-        label: 'Предыдущий файл',
+        group: t('Список'),
+        label: t('Предыдущий файл'),
         keys: 'P',
         run: actions.previousFile,
         hidden: !list
       },
       {
         id: 'playlist',
-        group: 'Список',
-        label: 'Список воспроизведения',
+        group: t('Список'),
+        label: t('Список воспроизведения'),
         run: actions.showPlaylist,
         hidden: !list
       },
 
       {
         id: 'fullscreen',
-        group: 'Окно',
-        label: 'Полный экран',
+        group: t('Окно'),
+        label: t('Полный экран'),
         keys: 'F',
         run: actions.toggleFullscreen,
         checked: window.fullscreen
       },
       {
         id: 'ontop',
-        group: 'Окно',
-        label: 'Поверх остальных окон',
+        group: t('Окно'),
+        label: t('Поверх остальных окон'),
         run: actions.toggleAlwaysOnTop,
         checked: window.alwaysOnTop
       },
 
       {
         id: 'open',
-        group: 'Файл',
-        label: 'Открыть файл…',
+        group: t('Файл'),
+        label: t('Открыть файл…'),
         keys: 'Ctrl+O',
         run: actions.openFile
       },
       {
         id: 'info',
-        group: 'Файл',
-        label: 'Сведения о файле',
+        group: t('Файл'),
+        label: t('Сведения о файле'),
         keys: 'I',
         run: actions.showInfo,
         hidden: !hasFile
       },
       {
         id: 'reveal',
-        group: 'Файл',
-        label: 'Показать в проводнике',
+        group: t('Файл'),
+        label: t('Показать в проводнике'),
         run: actions.revealInExplorer,
         hidden: !player.path
       },
 
       {
         id: 'settings',
-        group: 'Приложение',
-        label: 'Настройки',
+        group: t('Приложение'),
+        label: t('Настройки'),
         run: actions.showSettings
       },
       {
         id: 'shortcuts',
-        group: 'Приложение',
-        label: 'Сочетания клавиш',
+        group: t('Приложение'),
+        label: t('Сочетания клавиш'),
         keys: 'F1',
         run: actions.showShortcuts
       },
       {
         id: 'update',
-        group: 'Приложение',
-        label: 'Проверить обновления',
+        group: t('Приложение'),
+        label: t('Проверить обновления'),
         run: actions.checkUpdate
       }
     ],
     [
+      t,
       actions,
       hasFile,
       list,
@@ -331,18 +334,20 @@ export function useCommands(
  * живут в его собственном слое. Шпаргалке они всё равно нужны — иначе половина
  * приложения останется незадокументированной.
  */
-export const EDITOR_KEYS: { keys: string; label: string }[] = [
-  { keys: 'E', label: 'Открыть редактор, Esc — выйти' },
-  { keys: 'S', label: 'Разрезать по плейхеду' },
-  { keys: 'Del', label: 'Удалить выбранное со сдвигом' },
-  { keys: 'Ctrl+D', label: 'Дублировать выбранное' },
-  { keys: 'I / O', label: 'Отметить начало и конец момента' },
-  { keys: 'Ctrl+X', label: 'Вырезать отмеченное' },
-  { keys: 'Ctrl+Shift+X', label: 'Оставить только отмеченное' },
-  { keys: 'Ctrl+Z', label: 'Отменить, Ctrl+Shift+Z — повторить' },
-  { keys: 'Ctrl+R', label: 'Вернуть весь файл целиком' },
-  { keys: ', / .', label: 'Кадр назад и вперёд' },
-  { keys: 'Alt+← / →', label: 'По границам кусков' },
-  { keys: 'Ctrl+колесо', label: 'Зум, Shift+F — вписать целиком' },
-  { keys: 'Ctrl+S', label: 'Сохранить нарезку' }
-]
+export function editorKeys(t: (text: string) => string): { keys: string; label: string }[] {
+  return [
+  { keys: 'E', label: t('Открыть редактор, Esc — выйти') },
+  { keys: 'S', label: t('Разрезать по плейхеду') },
+  { keys: 'Del', label: t('Удалить выбранное со сдвигом') },
+  { keys: 'Ctrl+D', label: t('Дублировать выбранное') },
+  { keys: 'I / O', label: t('Отметить начало и конец момента') },
+  { keys: 'Ctrl+X', label: t('Вырезать отмеченное') },
+  { keys: 'Ctrl+Shift+X', label: t('Оставить только отмеченное') },
+  { keys: 'Ctrl+Z', label: t('Отменить, Ctrl+Shift+Z — повторить') },
+  { keys: 'Ctrl+R', label: t('Вернуть весь файл целиком') },
+  { keys: ', / .', label: t('Кадр назад и вперёд') },
+  { keys: 'Alt+← / →', label: t('По границам кусков') },
+  { keys: t('Ctrl+колесо'), label: t('Зум, Shift+F — вписать целиком') },
+    { keys: 'Ctrl+S', label: t('Сохранить нарезку') }
+  ]
+}

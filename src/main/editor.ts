@@ -15,6 +15,7 @@ import {
 import { availableEncoders, downloadFfmpeg, findFfmpeg, run, type Run } from './ffmpeg'
 import type { Store } from './store'
 import type { Thumbnailer } from './thumbnailer'
+import { showOnlyDialog } from './dialogs'
 
 /**
  * Всё, что редактору нужно от системы: диск, ffmpeg и второй mpv для кадров.
@@ -92,15 +93,19 @@ export function setupEditor(deps: EditorDeps): void {
 
   ipcMain.handle('editor:chooseTarget', async (_e, suggested: string) => {
     const window = deps.overlay()
-    const result = await dialog.showSaveDialog({
-      title: 'Куда сохранить нарезку',
-      defaultPath: suggested,
-      filters: [
-        { name: 'Видео', extensions: ['mp4', 'mkv', 'mov', 'webm', 'avi'] },
-        { name: 'Все файлы', extensions: ['*'] }
-      ],
-      ...(window ? { parent: window } : {})
-    })
+    const result = await showOnlyDialog(
+      () =>
+        dialog.showSaveDialog({
+          title: 'Куда сохранить нарезку',
+          defaultPath: suggested,
+          filters: [
+            { name: 'Видео', extensions: ['mp4', 'mkv', 'mov', 'webm', 'avi'] },
+            { name: 'Все файлы', extensions: ['*'] }
+          ],
+          ...(window ? { parent: window } : {})
+        }),
+      { canceled: true, filePath: '' }
+    )
 
     return result.canceled ? null : result.filePath
   })

@@ -7,6 +7,7 @@ import { EditorTimeline, type TimelineControls } from './EditorTimeline'
 import { ExportPanel } from './ExportPanel'
 import { useEditor } from './useEditor'
 import './editor.css'
+import { useT } from '../i18n'
 
 /**
  * Высота панели редактора в пикселях.
@@ -25,7 +26,8 @@ export interface EditorProps {
   startAt: number
   /** Есть ли звуковая дорожка: без неё точный экспорт строит команду иначе */
   hasAudio: boolean
-  onClose: () => void
+  /** Секунда исходника, на которой закончили: плееру ею рисовать полосу */
+  onClose: (leftAt: number) => void
   onNotice: (text: string) => void
 }
 
@@ -37,6 +39,7 @@ export function Editor({
   onClose,
   onNotice
 }: EditorProps): JSX.Element {
+  const t = useT()
   const editor = useEditor({ source, duration, startAt, onNotice })
   const controls = useRef<TimelineControls | null>(null)
   const [exporting, setExporting] = useState(false)
@@ -90,8 +93,9 @@ export function Editor({
       editor.project.segments.map((segment) => ({ in: segment.in, out: segment.out })),
       duration
     )
-    void window.keyframe.editor.leave(source, point?.sourceTime ?? startAt)
-    onClose()
+    const leftAt = point?.sourceTime ?? startAt
+    void window.keyframe.editor.leave(source, leftAt)
+    onClose(leftAt)
   }, [editor.project, editor.playhead, source, duration, startAt, onClose])
 
   const togglePause = useCallback(() => void mpv.command('cycle', 'pause'), [mpv])
@@ -128,7 +132,7 @@ export function Editor({
   const alignCuts = useCallback(() => {
     const next = alignToKeyframes(editor.project, keyframes)
     if (next === editor.project) {
-      onNotice('Резы уже стоят на ключевых кадрах')
+      onNotice(t('Резы уже стоят на ключевых кадрах'))
       return
     }
     editor.replace(next)
@@ -255,24 +259,24 @@ export function Editor({
   return (
     <div className="editor" style={{ height: `${HEIGHT}px` }}>
       <div className="editor__bar">
-        <Tool onClick={togglePause} hint={paused ? 'Играть' : 'Пауза'} keys="Пробел">
+        <Tool onClick={togglePause} hint={paused ? t('Играть') : t('Пауза')} keys={t('Пробел')}>
           <PlayIcon paused={paused} />
         </Tool>
 
         <Split />
 
-        <Tool onClick={editor.split} hint="Разрезать по плейхеду" keys="S">
+        <Tool onClick={editor.split} hint={t('Разрезать по плейхеду')} keys="S">
           <ScissorsIcon />
         </Tool>
         <Tool
           onClick={editor.remove}
           disabled={!selected}
-          hint="Удалить выбранное со сдвигом"
+          hint={t('Удалить выбранное со сдвигом')}
           keys="Del"
         >
           <TrashIcon />
         </Tool>
-        <Tool onClick={editor.duplicate} disabled={!selected} hint="Дублировать" keys="Ctrl+D">
+        <Tool onClick={editor.duplicate} disabled={!selected} hint={t('Дублировать')} keys="Ctrl+D">
           <CopyIcon />
         </Tool>
 
@@ -281,7 +285,7 @@ export function Editor({
         <Tool
           onClick={editor.markIn}
           active={editor.marks.in !== null}
-          hint="Отметить начало момента"
+          hint={t('Отметить начало момента')}
           keys="I"
         >
           <MarkIcon />
@@ -289,7 +293,7 @@ export function Editor({
         <Tool
           onClick={editor.markOut}
           active={editor.marks.out !== null}
-          hint="Отметить конец момента"
+          hint={t('Отметить конец момента')}
           keys="O"
         >
           <MarkIcon end />
@@ -308,12 +312,12 @@ export function Editor({
               {editor.marks.out === null ? '—' : formatTime(Math.max(editor.marks.out, editor.marks.in ?? editor.marks.out))}
             </span>
             <button className="emark__action" onClick={editor.cutMarked} disabled={!marked}>
-              Вырезать
+              {t('Вырезать')}
             </button>
             <button className="emark__action" onClick={editor.keepMarked} disabled={!marked}>
-              Оставить
+              {t('Оставить')}
             </button>
-            <button className="emark__clear" onClick={editor.clearMarks} aria-label="Снять метки">
+            <button className="emark__clear" onClick={editor.clearMarks} aria-label={t('Снять метки')}>
               <svg width="9" height="9" viewBox="0 0 10 10">
                 <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1.4" />
               </svg>
@@ -323,13 +327,13 @@ export function Editor({
 
         <Split />
 
-        <Tool onClick={editor.undo} disabled={!editor.canUndo} hint="Отменить" keys="Ctrl+Z">
+        <Tool onClick={editor.undo} disabled={!editor.canUndo} hint={t('Отменить')} keys="Ctrl+Z">
           <UndoIcon />
         </Tool>
         <Tool
           onClick={editor.redo}
           disabled={!editor.canRedo}
-          hint="Повторить"
+          hint={t('Повторить')}
           keys="Ctrl+Shift+Z"
         >
           <UndoIcon flipped />
@@ -337,7 +341,7 @@ export function Editor({
         <Tool
           onClick={editor.reset}
           disabled={removed <= 0.05}
-          hint="Вернуть весь файл целиком"
+          hint={t('Вернуть весь файл целиком')}
           keys="Ctrl+R"
         >
           <RestoreIcon />
@@ -352,13 +356,13 @@ export function Editor({
           </div>
         )}
 
-        <Tool onClick={() => controls.current?.zoomBy(1 / 1.4)} hint="Отдалить" keys="−">
+        <Tool onClick={() => controls.current?.zoomBy(1 / 1.4)} hint={t('Отдалить')} keys="−">
           <ZoomIcon />
         </Tool>
-        <Tool onClick={() => controls.current?.fit()} hint="Вписать целиком" keys="Shift+F">
+        <Tool onClick={() => controls.current?.fit()} hint={t('Вписать целиком')} keys="Shift+F">
           <FitIcon />
         </Tool>
-        <Tool onClick={() => controls.current?.zoomBy(1.4)} hint="Приблизить" keys="+">
+        <Tool onClick={() => controls.current?.zoomBy(1.4)} hint={t('Приблизить')} keys="+">
           <ZoomIcon plus />
         </Tool>
 
@@ -368,13 +372,13 @@ export function Editor({
           className="editor__save"
           onClick={() => setExporting(true)}
           disabled={editor.project.segments.length === 0}
-          title="Сохранить нарезку (Ctrl+S)"
+          title={t('Сохранить нарезку (Ctrl+S)')}
         >
-          Сохранить
+          {t('Сохранить')}
         </button>
 
-        <button className="editor__done" onClick={leave} title="Выйти из редактора (Esc)">
-          Готово
+        <button className="editor__done" onClick={leave} title={t('Выйти из редактора (Esc)')}>
+          {t('Готово')}
         </button>
       </div>
 
@@ -393,7 +397,7 @@ export function Editor({
           keyframes={keyframes}
           onAlign={alignCuts}
           onClose={() => setExporting(false)}
-          onReplaced={onClose}
+          onReplaced={() => onClose(0)}
           onNotice={onNotice}
         />
       )}

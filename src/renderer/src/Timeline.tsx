@@ -1,6 +1,39 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
 import { useMpvProperty } from './usePlayer'
 import { formatTime } from './format'
+import { useT } from './i18n'
+
+/**
+ * Куда мы сейчас попросили перемотать — до того, как mpv это подтвердит.
+ *
+ * Интерфейс не имеет права ждать движок. Между нажатием стрелки и первым
+ * подтверждением от mpv лежит круг IPC плюс сам переход: на длинном фильме это
+ * заметно, и раньше в этот промежуток цифра и полоса просто стояли. Теперь они
+ * двигаются в момент нажатия, а пришедшее от mpv значение их только уточняет.
+ *
+ * Модульный список слушателей, а не контекст: подписчиков двое, оба пишут прямо
+ * в DOM, и протаскивать это через дерево React значило бы перерисовывать окно
+ * на каждую перемотку.
+ */
+const seekHints = new Set<(delta: number) => void>()
+
+/** Сообщить, на сколько секунд мы только что попросили перемотать. */
+export function hintSeek(delta: number): void {
+  for (const hint of seekHints) hint(delta)
+}
+
+function useSeekHint(handler: (delta: number) => void): void {
+  const latest = useRef(handler)
+  latest.current = handler
+
+  useEffect(() => {
+    const listener = (delta: number): void => latest.current(delta)
+    seekHints.add(listener)
+    return () => {
+      seekHints.delete(listener)
+    }
+  }, [])
+}
 
 /** Ширина превью кадра и боковой отступ панели — те же числа, что в styles.css. */
 const PREVIEW_WIDTH = 170
@@ -42,7 +75,20 @@ function predictedX(event: PointerEvent): number {
  * а откладывает обработку до следующего кадра: при ста двадцати кадрах в
  * секунду это лишние восемь миллисекунд отставания подсказки от курсора.
  */
-export function Timeline({ duration }: { duration: number }): JSX.Element {
+export function Timeline({
+  duration,
+  expectedRatio
+}: {
+  duration: number
+  /**
+   * Доля дорожки, на которую плеер сейчас встанет, если она известна заранее.
+   *
+   * Именно доля, а не секунда: сразу после выхода из редактора mpv ещё
+   * сообщает монтажную длительность, и секунду было бы не на что делить.
+   */
+  expectedRatio?: number | null
+}): JSX.Element {
+  const t = useT()
   const track = useRef<HTMLDivElement | null>(null)
   const fill = useRef<HTMLDivElement | null>(null)
   const thumb = useRef<HTMLDivElement | null>(null)
@@ -77,13 +123,52 @@ export function Timeline({ duration }: { duration: number }): JSX.Element {
     if (thumb.current) thumb.current.style.left = percent
   }, [])
 
+  /**
+   * Ждём подтверждения позиции после выхода из редактора.
+   *
+   * mpv в это время открывает исходный файл заново и присылает нулевую позицию
+   * до того, как доедет до запрошенной секунды. Нарисованный по ней ноль — это
+   * прыжок полосы в начало и возврат обратно, как только пойдёт
+   * воспроизведение.
+   */
+  const awaiting = useRef(false)
+
   // Позиция воспроизведения: пока тащат, её задаёт палец, и приходящая от mpv
   // затирала бы положение под ним
   useMpvProperty('time-pos', (value) => {
     position.current = typeof value === 'number' ? value : 0
     if (dragging.current || duration <= 0) return
+
+    // Ноль до окончания загрузки относится к прошлому файлу, а не к этому
+    if (awaiting.current) {
+      if (position.current < 0.001) return
+      awaiting.current = false
+    }
+
     drawProgress(position.current / duration)
   })
+
+  /*
+   * Перемотка стрелками: полоса уезжает в момент нажатия.
+   *
+   * Считаем от собственной последней позиции, а не ждём ответа: при зажатой
+   * клавише нажатия идут чаще, чем mpv успевает подтверждать, и отсчёт от
+   * присланного значения топтался бы на месте.
+   */
+  useSeekHint((delta) => {
+    if (duration <= 0 || dragging.current) return
+
+    position.current = Math.min(Math.max(position.current + delta, 0), duration)
+    drawProgress(position.current / duration)
+  })
+
+  // Место известно заранее — рисуем сразу, не дожидаясь, пока mpv откроет файл
+  useEffect(() => {
+    if (expectedRatio === null || expectedRatio === undefined) return
+
+    awaiting.current = true
+    drawProgress(expectedRatio)
+  }, [expectedRatio, drawProgress])
 
   useMpvProperty('demuxer-cache-duration', (value) => {
     if (!buffer.current || duration <= 0) return
@@ -152,14 +237,19 @@ export function Timeline({ duration }: { duration: number }): JSX.Element {
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>): void => {
     hovering.current = true
 
+    // Предсказанная точка одна на всё: и ползунок, и подсказка. Раньше
+    // подсказка брала предсказанную, а ползунок — сырую, и то, что человек
+    // держит пальцем, отставало заметнее того, что рядом с ним
+    const x = predictedX(event.nativeEvent)
+
     if (dragging.current) {
-      const ratio = ratioAt(event.clientX)
+      const ratio = ratioAt(x)
       drawProgress(ratio)
       // Пока тащим — по ключевым кадрам: так картинка успевает за пальцем
       void mpv.command('seek', ratio * duration, 'absolute+keyframes')
     }
 
-    drawPreview(predictedX(event.nativeEvent))
+    drawPreview(x)
   }
 
   const release = (event: React.PointerEvent<HTMLDivElement>): void => {
@@ -202,7 +292,7 @@ export function Timeline({ duration }: { duration: number }): JSX.Element {
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
       role="slider"
-      aria-label="Позиция воспроизведения"
+      aria-label={t('Позиция воспроизведения')}
       aria-valuemin={0}
       aria-valuemax={duration}
       tabIndex={0}
@@ -240,14 +330,62 @@ export function Timeline({ duration }: { duration: number }): JSX.Element {
 export function Timecode({ duration }: { duration: number }): JSX.Element {
   const current = useRef<HTMLSpanElement | null>(null)
   const shown = useRef<string | null>(null)
+  /** Последняя известная секунда: от неё считается перемотка до ответа mpv */
+  const position = useRef(0)
 
-  useMpvProperty('time-pos', (value) => {
-    const text = formatTime(typeof value === 'number' ? value : 0)
+  const paint = (seconds: number): void => {
+    const text = formatTime(seconds)
     // Секунда меняется раз в секунду, а приходит время в сто раз чаще:
     // без этой проверки мы писали бы в DOM одно и то же
     if (text === shown.current || !current.current) return
     shown.current = text
     current.current.textContent = text
+  }
+
+  /**
+   * Пока идёт переход, время не показываем.
+   *
+   * mpv доезжает до места в два приёма: сначала прыгает на ближайший ключевой
+   * кадр перед целью, потом доводит декодированием до точной секунды. Обе
+   * позиции он честно присылает, и на экране это выглядело как «5:46 → 5:50 →
+   * 5:51» на один нажатый раз — цифра будто промахивалась мимо и доползала.
+   *
+   * Показываем только то, на чём переход закончился.
+   */
+  const seeking = useRef(false)
+
+  useMpvProperty('seeking', (value) => {
+    seeking.current = value === true
+  })
+
+  // Смена файла посреди перехода оставила бы флаг поднятым, и таймкод замер бы
+  // навсегда: новое время приходит, а показывать его некому
+  useEffect(() => {
+    seeking.current = false
+  }, [duration])
+
+  useMpvProperty('time-pos', (value) => {
+    const seconds = typeof value === 'number' ? value : 0
+    position.current = seconds
+
+    // Промежуточные позиции перехода не показываем: цифра уже стоит там, куда
+    // мы попросили, и метаться между ключевым кадром и целью ей незачем
+    if (seeking.current) return
+
+    paint(seconds)
+  })
+
+  /*
+   * Перемотка стрелками: цифра меняется в момент нажатия.
+   *
+   * Она же и останется — переход идёт точный (relative+exact), то есть mpv
+   * приедет ровно туда, что мы показали, и поправлять потом будет нечего.
+   */
+  useSeekHint((delta) => {
+    if (duration <= 0) return
+
+    position.current = Math.min(Math.max(position.current + delta, 0), duration)
+    paint(position.current)
   })
 
   return (
