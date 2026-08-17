@@ -36,6 +36,8 @@ interface Data {
   window: WindowBounds | null
   resume: Record<string, ResumeEntry>
   projects: Record<string, ProjectEntry>
+  /** Недавно открытые файлы, свежие первыми. Путь как есть, без приведения регистра */
+  recent: string[]
   settings: Settings
 }
 
@@ -45,6 +47,7 @@ const DEFAULTS: Data = {
   window: null,
   resume: {},
   projects: {},
+  recent: [],
   settings: DEFAULT_SETTINGS
 }
 
@@ -62,6 +65,9 @@ const RESUME_TAIL = 45
 
 /** Нарезок хранится меньше, чем позиций: их и делают реже. */
 const PROJECT_LIMIT = 50
+
+/** Столько недавних файлов помещается в палитре, дальше её всё равно не листают. */
+const RECENT_LIMIT = 40
 
 /**
  * Настройки и позиции просмотра в одном файле в userData.
@@ -89,6 +95,7 @@ export class Store {
         window: parsed.window ?? null,
         resume: parsed.resume ?? {},
         projects: parsed.projects ?? {},
+        recent: Array.isArray(parsed.recent) ? parsed.recent : [],
         // Настройка, которой в файле ещё нет, берётся из умолчаний: так
         // новая версия читает файл старой без миграций
         settings: { ...DEFAULT_SETTINGS, ...(parsed.settings ?? {}) }
@@ -96,7 +103,7 @@ export class Store {
     } catch {
       // Файла нет или он испорчен — начинаем с чистого состояния,
       // это не повод мешать запуску
-      return { ...DEFAULTS, resume: {}, projects: {}, settings: { ...DEFAULT_SETTINGS } }
+      return { ...DEFAULTS, resume: {}, projects: {}, recent: [], settings: { ...DEFAULT_SETTINGS } }
     }
   }
 
@@ -153,6 +160,26 @@ export class Store {
   setWindow(bounds: WindowBounds): void {
     this.data.window = bounds
     this.schedule()
+  }
+
+  /**
+   * Недавно открытое — история для палитры команд.
+   *
+   * Отдельно от позиций просмотра: те записываются только для достаточно
+   * длинного видео и не с самого начала, а в истории должно быть всё, что
+   * открывали, включая пятиминутный ролик и сетевой поток.
+   */
+  addRecent(file: string): void {
+    const key = Store.key(file)
+    const without = this.data.recent.filter((item) => Store.key(item) !== key)
+
+    // Тот же файл, открытый заново, поднимается наверх, а не задваивается
+    this.data.recent = [file, ...without].slice(0, RECENT_LIMIT)
+    this.schedule()
+  }
+
+  get recent(): string[] {
+    return this.data.recent
   }
 
   /** Ключ по пути: одно и то же видео на диске — одна запись. */

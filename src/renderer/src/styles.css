@@ -1,4 +1,29 @@
 /*
+ * Inter лежит в проекте файлом, а не тянется из сети.
+ *
+ * В стеке шрифтов он стоял первым с самого начала, но самого шрифта не было, и
+ * интерфейс всё это время рисовался системным Segoe UI. Загружать его с
+ * чужого сервера нельзя дважды: плеер обязан работать без интернета, а CSP
+ * интерфейса и так не пускает никуда наружу.
+ *
+ * Начертание переменное: один файл на 352 КБ вместо девяти отдельных весов,
+ * и любой вес между 100 и 900 — в интерфейсе используется в том числе
+ * нестандартный 450.
+ *
+ * font-display: block, а не swap: файл лежит рядом и читается мгновенно, а
+ * swap успел бы показать текст системным шрифтом и тут же переверстать его.
+ *
+ * Лицензия SIL OFL 1.1 — рядом, в assets/InterVariable-LICENSE.txt.
+ */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url('./assets/InterVariable.woff2') format('woff2');
+}
+
+/*
  * Дизайн-токены Keyframe.
  * Тема одна — тёмная. Светлая не планируется, но все цвета вынесены сюда,
  * чтобы её добавление не требовало правок в компонентах.
@@ -1396,4 +1421,245 @@ kbd {
     opacity: 1;
     transform: translateX(-50%);
   }
+}
+
+/* ---------- Палитра команд и шпаргалка ---------- */
+
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/*
+ * Своя анимация, а не info-in от панели сведений.
+ *
+ * Та панель стоит на left/top: 50% и центрируется собственным
+ * transform: translate(-50%, -50%) — он часть её раскладки, а не движения.
+ * Палитра центрируется флексбоксом, и тот же transform уносил её на половину
+ * её размера вверх и влево, за край экрана, откуда она потом прыгала на место.
+ * Здесь смещение маленькое и от собственного положения.
+ */
+@keyframes palette-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.99);
+  }
+}
+
+/*
+ * Затемнение под палитрой ловит клик мимо неё. Оно же гасит видео настолько,
+ * чтобы белый текст читался поверх любого кадра, но не настолько, чтобы
+ * потерять, что вообще играет.
+ */
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  justify-content: center;
+  /*
+   * Затемнение плотное намеренно. Полупрозрачного не хватает: под палитрой
+   * оказывается не ровный фон, а кадр фильма — светлое небо или белая стена, —
+   * и текст на нём не читается. Размытие само по себе не помогает: оно убирает
+   * детали, но не яркость.
+   */
+  background: rgba(4, 4, 6, 0.86);
+  backdrop-filter: blur(10px);
+  animation: backdrop-in var(--dur-base) var(--ease);
+}
+
+.palette {
+  width: min(620px, calc(100vw - 48px));
+  max-height: min(460px, calc(100vh - 140px));
+  /* Не по центру: палитра открывается в верхней трети, ближе к тому месту,
+     куда человек уже смотрит, набирая её вслепую */
+  margin-top: 12vh;
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: rgba(19, 19, 22, 0.98);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  animation: palette-in var(--dur-base) var(--ease);
+}
+
+.palette__input {
+  flex: 0 0 auto;
+  height: 50px;
+  padding: 0 16px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  font: inherit;
+  font-size: 15px;
+  color: var(--text-hi);
+  outline: none;
+}
+
+.palette__input::placeholder {
+  color: var(--text-dim);
+}
+
+.palette__list {
+  flex: 1;
+  min-height: 0;
+  padding: 6px;
+  overflow-y: auto;
+}
+
+.palette__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-lo);
+  text-align: left;
+  cursor: pointer;
+}
+
+/*
+ * Выделение ведётся клавишами и мышью одинаково: два разных подсвеченных
+ * пункта — «где я» и «где курсор» — сбивают с толку, поэтому наведение мышью
+ * двигает то же самое выделение, что и стрелки.
+ */
+.palette__item[data-active='true'] {
+  background: var(--bg-raised);
+  color: var(--text-hi);
+}
+
+.palette__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Совпавшие буквы: иначе непонятно, почему нашлось именно это */
+.palette__label b {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.palette__check {
+  color: var(--accent-text);
+  font-size: 12px;
+}
+
+.palette__group {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.palette__keys-slot {
+  flex: 0 0 auto;
+  width: 62px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.palette__keys {
+  min-width: 22px;
+  padding: 2px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg-raised);
+  font: inherit;
+  font-size: 10px;
+  color: var(--text-lo);
+  text-align: center;
+}
+
+.palette__empty {
+  padding: 24px;
+  font-size: 13px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.shortcuts {
+  width: min(760px, calc(100vw - 48px));
+  max-height: min(620px, calc(100vh - 100px));
+  margin-top: 8vh;
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: rgba(19, 19, 22, 0.98);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  animation: palette-in var(--dur-base) var(--ease);
+}
+
+.shortcuts__head {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.shortcuts__title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Две колонки: раскладка целиком должна помещаться на экран без прокрутки */
+.shortcuts__body {
+  flex: 1;
+  min-height: 0;
+  padding: 14px;
+  overflow-y: auto;
+  columns: 2;
+  column-gap: 28px;
+}
+
+.shortcuts__group {
+  break-inside: avoid;
+  margin-bottom: 16px;
+}
+
+.shortcuts__name {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.shortcuts__row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 3px 0;
+}
+
+.shortcuts__keys {
+  flex: 0 0 auto;
+  min-width: 76px;
+  padding: 2px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg-raised);
+  font: inherit;
+  font-size: 10px;
+  color: var(--text-hi);
+  text-align: center;
+}
+
+.shortcuts__label {
+  font-size: 12px;
+  color: var(--text-lo);
 }

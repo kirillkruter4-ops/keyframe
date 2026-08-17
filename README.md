@@ -250,3 +250,7 @@ $env:CSC_LINK = "C:\path\to\cert.pfx"; $env:CSC_KEY_PASSWORD = "..."; npm run di
 
 Проект связывается с mpv, распространяемым под GPLv2+, поэтому иная лицензия
 невозможна. Keyframe не связан с Linear Orbit, Inc.
+
+Шрифт интерфейса — [Inter](https://rsms.me/inter/) под SIL Open Font License
+1.1; текст лицензии лежит рядом со шрифтом в
+`src/renderer/src/assets/InterVariable-LICENSE.txt`.

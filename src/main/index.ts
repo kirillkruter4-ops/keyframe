@@ -556,7 +556,10 @@ async function startMpv(): Promise<void> {
         break
 
       case 'path':
-        if (typeof value === 'string') currentFile = value
+        if (typeof value !== 'string') break
+        currentFile = value
+        // Склейка редактора — не файл, который открывали: в истории ей не место
+        if (!value.startsWith('edl://')) store?.addRecent(value)
         break
     }
   })
@@ -788,6 +791,26 @@ ipcMain.handle('playlist:open', async (_e, targets: string[]) => {
 
   await openPath(mpv, playable[0], playable.length === 1 && settings().fillPlaylistFromFolder)
   if (playable.length > 1) await appendPaths(mpv, playable.slice(1))
+})
+
+/**
+ * История для палитры команд.
+ *
+ * Файлы, которых уже нет на диске, отсеиваются здесь, а не при записи: диск
+ * между запусками меняется, и хранить в истории ссылку на удалённое — значит
+ * предлагать открыть то, чего нет.
+ */
+ipcMain.handle('recent:list', () => {
+  const files = store?.recent ?? []
+
+  return files.filter((file) => {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(file)) return true
+    try {
+      return fs.statSync(file).isFile()
+    } catch {
+      return false
+    }
+  })
 })
 
 ipcMain.handle('playlist:remove', (_e, index: number) => mpv?.command('playlist-remove', index))

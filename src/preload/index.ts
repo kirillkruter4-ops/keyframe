@@ -102,6 +102,9 @@ const api = {
     /** Открыть перетащенное: первый файл играет, остальные встают в очередь. */
     open: (targets: string[]) => ipcRenderer.invoke('playlist:open', targets),
     remove: (index: number) => ipcRenderer.invoke('playlist:remove', index),
+
+    /** Недавно открытое: история для палитры. Уже несуществующие пути отсеяны. */
+    recent: () => ipcRenderer.invoke('recent:list') as Promise<string[]>,
     clear: () => ipcRenderer.invoke('playlist:clear')
   },
 

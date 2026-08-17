@@ -26,11 +26,23 @@ import { PlaylistPanel, SettingsPanel } from './Settings'
 import { Timecode, Timeline } from './Timeline'
 import { justDragged, useDragPanel } from './useDragPanel'
 import { Editor } from './editor/Editor'
+import { useCommands, type CommandActions } from './commands'
+import { Palette } from './Palette'
+import { Shortcuts } from './Shortcuts'
 import { formatTime } from './format'
 import logoUrl from './assets/logo.svg'
 
 /** Шаги скорости. Ниже 0.25 речь неразборчива, выше 3 — бессмысленна. */
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3]
+
+/**
+ * Что забирает колесо себе.
+ *
+ * Перечислением, а не проверкой «прокручивается ли элемент»: панель без
+ * прокрутки всё равно не место для громкости — вниз по ней колесо ничего не
+ * даёт, а звук уезжает.
+ */
+const WHEEL_SURFACES = '.editor, .panel, .palette, .shortcuts, .menu, .tracks'
 
 /** Такой файл перетащили как субтитры, а не как видео. */
 const SUBTITLE_EXTENSIONS = /\.(srt|ass|ssa|sub|vtt|sup|idx|lrc)$/i
@@ -48,6 +60,11 @@ export function App(): JSX.Element {
 
   /** Что открыто поверх видео: разом показываем только одно. */
   const [panel, setPanel] = useState<'info' | 'settings' | 'playlist' | null>(null)
+
+  /** Палитра команд и шпаргалка — каждая поверх всего остального. */
+  const [palette, setPalette] = useState(false)
+  const [shortcuts, setShortcuts] = useState(false)
+  const [recent, setRecent] = useState<string[]>([])
 
   /**
    * Открытый редактор. Хранится файлом и секундой, а не флагом: пока он открыт,
@@ -170,6 +187,18 @@ export function App(): JSX.Element {
       startAt: Number.isFinite(position) ? position : 0
     })
   }, [mpv, player.path, player.duration, showNotice])
+
+  /**
+   * Палитра открывается со свежей историей.
+   *
+   * Список читается в момент открытия, а не подпиской: он меняется раз в
+   * несколько минут, а держать его в состоянии значило бы перерисовывать окно
+   * на каждый открытый файл.
+   */
+  const openPalette = useCallback(() => {
+    void window.keyframe.playlist.recent().then(setRecent)
+    setPalette(true)
+  }, [])
 
   // Открыли другой файл, пока висел редактор: резать уже нечего. Склейку
   // (edl://) за смену файла не считаем — это и есть то, что мы сами загрузили
@@ -297,12 +326,39 @@ export function App(): JSX.Element {
 
     const onKey = (event: KeyboardEvent): void => {
       if (event.repeat && !repeatable.has(event.code)) return
-      if (!hasFile && !alwaysAllowed.has(event.code)) return
+
+      // Палитра и шпаргалка забирают клавиатуру целиком: под палитрой поле
+      // ввода, и «пробел» там должен ставить пробел, а не паузу
+      if (palette || shortcuts) {
+        if (event.code === 'Escape') {
+          setPalette(false)
+          setShortcuts(false)
+        }
+        return
+      }
+
+      // Ctrl+K открывает палитру откуда угодно, в том числе из редактора
+      if (event.code === 'KeyK' && event.ctrlKey) {
+        event.preventDefault()
+        openPalette()
+        return
+      }
+
+      if (event.code === 'F1') {
+        event.preventDefault()
+        setShortcuts(true)
+        return
+      }
 
       // В редакторе своя раскладка целиком: S там режет, а не снимает кадр,
       // I ставит метку, а не показывает сведения. Двух обработчиков на одну
       // клавишу быть не должно — редактор ставит свой и отвечает за всё
       if (editing) return
+
+      // Без файла играть нечем: mpv на seek и paused отвечает ошибкой, а не
+      // молчанием. Палитра, шпаргалка и открытие файла сюда не попадают —
+      // они разобраны выше и работают на пустом экране
+      if (!hasFile && !alwaysAllowed.has(event.code)) return
 
       switch (event.code) {
         case 'Space':
@@ -413,7 +469,10 @@ export function App(): JSX.Element {
     mpv,
     settings.seekStep,
     editing,
-    openEditor
+    openEditor,
+    palette,
+    shortcuts,
+    openPalette
   ])
 
   /**
@@ -458,8 +517,12 @@ export function App(): JSX.Element {
     // Крутить громкость нечему, пока ничего не открыто: mpv её примет, но
     // подсказка обещала бы изменение там, где менять нечего
     if (!hasFile) return
-    // Над дорожкой редактора колесо принадлежит ей: там прокрутка и зум
-    if ((event.target as HTMLElement).closest('.editor')) return
+
+    // Колесо принадлежит тому, что открыто поверх видео: списку, настройкам,
+    // палитре, дорожке редактора. Крутить громкость, прокручивая список, —
+    // ровно то поведение, из-за которого громкость уезжает незаметно для себя
+    if ((event.target as HTMLElement).closest(WHEEL_SURFACES)) return
+
     adjustVolume(event.deltaY < 0 ? 5 : -5)
   }
 
@@ -488,6 +551,41 @@ export function App(): JSX.Element {
 
     void window.keyframe.playlist.open(media)
   }
+
+  const commandActions: CommandActions = {
+    togglePause,
+    seekBy,
+    frameStep,
+    changeSpeed,
+    resetSpeed,
+    adjustVolume,
+    toggleMute,
+    toggleFullscreen,
+    toggleAlwaysOnTop: () => void window.keyframe.window.toggleAlwaysOnTop(),
+    toggleSubtitles,
+    adjustSubDelay,
+    screenshot: () => void takeScreenshot(),
+    openFile,
+    openSubtitle: () => {
+      void window.keyframe.openSubtitle().then((file) => {
+        if (file) void mpv.command('sub-add', file, 'select')
+      })
+    },
+    openEditor: () => void openEditor(),
+    showInfo: () => setPanel('info'),
+    showSettings: () => setPanel('settings'),
+    showPlaylist: () => setPanel('playlist'),
+    showShortcuts: () => setShortcuts(true),
+    nextFile: () => void mpv.command('playlist-next', 'weak'),
+    previousFile: () => void mpv.command('playlist-prev', 'weak'),
+    toggleLoop: () => void mpv.set('loop-file', player.loop ? 'no' : 'inf'),
+    revealInExplorer: () => {
+      if (player.path) void window.keyframe.showItem(player.path)
+    },
+    checkUpdate: () => void window.keyframe.update.check()
+  }
+
+  const commands = useCommands(player, { fullscreen, alwaysOnTop }, commandActions)
 
   const menuActions: MenuActions = {
     togglePause,
@@ -770,6 +868,17 @@ export function App(): JSX.Element {
           </div>
         )}
       </div>
+
+      {palette && (
+        <Palette
+          commands={commands}
+          recent={recent}
+          onOpenFile={(path) => void window.keyframe.playlist.open([path])}
+          onClose={() => setPalette(false)}
+        />
+      )}
+
+      {shortcuts && <Shortcuts commands={commands} onClose={() => setShortcuts(false)} />}
 
       {editing && (
         <Editor
